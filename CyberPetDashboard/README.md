@@ -24,7 +24,7 @@ docker compose down -v
 
 ```bash
 docker build -t cyberpet-dashboard .
-docker run -d -p 8080:8080 -v cyberpet-data:/app/data --name cyberpet-dashboard cyberpet-dashboard
+docker run -d -p 8090:8080 -v cyberpet-data:/app/data --name cyberpet-dashboard cyberpet-dashboard
 ```
 
 ## Connecting the device
@@ -61,6 +61,27 @@ network calls — the dashboard becomes optional, not required.
 | POST | `/api/settings` | Update settings (partial) |
 | GET | `/api/pet` | Last-synced pet state |
 | POST | `/api/sync` | Device sync endpoint: accepts `{deviceId, petState, completedHabits: [names]}`, returns current habits/goals/settings |
+
+## Fixed in the v3 revision
+
+- **Dashboard XP was silently discarded by the device** — XP awarded via quests
+  or manual habit completions was written into `petState` on the dashboard, but
+  the device overwrote `petState` on every sync so the XP vanished within one
+  cycle. Fixed with a monotonic `dashXpTotal` counter: the dashboard accumulates
+  all awarded XP; the device applies only the delta above what it has already
+  received (`applyDashboardXpTotal` in `pet.cpp`) — idempotent, no ack needed.
+  Quest completions also bump `configVersion` so the device's 5 s config poll
+  delivers the XP promptly.
+- **Long habit names produced null completions and zero streaks** — `recordCompletions`
+  and `streakFor` used strict `===` matching against names that may have been
+  truncated to 23 chars on-device. Replaced with `namesMatch()`, a
+  truncation-aware helper consistent with the firmware's `strncmp` rule.
+- **Sync response overflow killed sync silently** — the ArduinoJson response
+  buffer was `StaticJsonDocument<2048>`; a response including habits + goals +
+  quests + settings easily exceeds that, causing `deserializeJson` to fail and
+  the device to stop syncing. Replaced with `DynamicJsonDocument(6144)`.
+- **docker run port** — `README.md` listed `-p 8080:8080` (host 8080 is taken by
+  SearXNG); corrected to `-p 8090:8080`.
 
 ## Fixed in the v2 revision
 

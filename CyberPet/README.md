@@ -52,6 +52,23 @@ key, no cloud dependency, runs standalone on-device.
 6. Flash via USB-C from Arduino IDE (BOOT+RESET combo if it won't enter
    download mode automatically).
 
+## Fixed bugs (v3 revision)
+
+- **Dashboard XP was silently discarded** — XP from quests and manual habit
+  completions was stored in `petState` on the dashboard, but the device
+  overwrote `petState` on every sync. Fixed with a monotonic `dashXpTotal`
+  counter in the server and `applyDashboardXpTotal()` on the device: only the
+  delta above what was already applied is credited, so repeated calls are safe.
+  Existing NVS saves are invalidated (the struct grew by one `int`) — the
+  `sizeof` guard in `loadPet()` already handles this by falling back to defaults.
+- **Long habit names produced null completions and zero streaks on the
+  dashboard** — `recordCompletions` and `streakFor` in `server.js` used `===`
+  for name matching, which never matched a name truncated to 23 chars on-device.
+  Fixed with `namesMatch()`, consistent with the firmware's `strncmp` rule.
+- **Sync response buffer overflow** — `StaticJsonDocument<2048>` in
+  `wifi_sync.cpp` silently failed to parse responses that include habits +
+  goals + quests + settings. Replaced with `DynamicJsonDocument(6144)`.
+
 ## Fixed bugs (v2 revision)
 
 These were caught in a code audit — if you grabbed an earlier copy of these

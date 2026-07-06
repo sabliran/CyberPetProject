@@ -64,6 +64,11 @@ user to their board's example instead.
   null/empty/non-finite values.** A half-filled form must not overwrite valid
   settings. The frontend also strips empty fields before POSTing — keep both
   layers.
+- **Server-side matching against device-supplied habit names must also be
+  truncation-aware.** Use `namesMatch(a, b)` (defined near `stageFromXP` in
+  `server.js`) for any comparison involving a name that may have originated on
+  the device. Direct `===` against a 23-char-truncated name misses, which logs
+  completions with `habitId: null` / `xpValue: 0` and zeros out streaks.
 
 ## Version assumptions
 

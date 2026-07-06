@@ -19,9 +19,10 @@ Pet::Pet() {
   state.mood  = 80;
   state.daysAlive          = 0;
   state.lastCareTimestamp  = 0;
-  state.hunger  = 100;
-  state.fedToday = false;
-  state.alive   = true;
+  state.hunger       = 100;
+  state.fedToday     = false;
+  state.alive        = true;
+  state.dashXpApplied = 0;
 }
 
 void Pet::init(const PetState& loaded) {
@@ -122,6 +123,13 @@ void Pet::setMood(int mood) {
 void Pet::setHunger(int hunger) {
   state.hunger = max(0, min(100, hunger));
   if (state.hunger > 0) state.alive = true;
+}
+
+void Pet::applyDashboardXpTotal(int total) {
+  if (total > state.dashXpApplied) {
+    addXP(total - state.dashXpApplied);
+    state.dashXpApplied = total;
+  }
 }
 
 const char* Pet::getStageName() const {

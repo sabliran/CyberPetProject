@@ -42,11 +42,21 @@ function stageFromXP(xp) {
 
 // ---------- shared helpers (cont.) ----------------------------------------
 
+// FIX 2: device habit names are truncated to DEVICE_NAME_MAX chars; a plain
+// === against a longer dashboard name never matches.  Use namesMatch() for
+// any comparison involving a name that may have originated on the device.
+const DEVICE_NAME_MAX = 23;
+function namesMatch(a, b) {
+  if (a === b) return true;
+  return (a.length >= DEVICE_NAME_MAX || b.length >= DEVICE_NAME_MAX)
+      && a.slice(0, DEVICE_NAME_MAX) === b.slice(0, DEVICE_NAME_MAX);
+}
+
 function recordCompletions(d, habitNames, date) {
   for (const name of habitNames) {
-    const already = d.completionLog.some(e => e.habitName === name && e.date === date);
+    const already = d.completionLog.some(e => namesMatch(e.habitName, name) && e.date === date);
     if (already) continue;
-    const habit = d.habits.find(h => h.name === name && h.active);
+    const habit = d.habits.find(h => namesMatch(h.name, name) && h.active);
     d.completionLog.push({
       id: d.nextLogId++,
       habitId:   habit?.id   ?? null,
@@ -108,11 +118,15 @@ app.post('/api/habits/:id/complete', (req, res) => {
       d.petState.xp    += habit.xpValue;
       d.petState.stage  = stageFromXP(d.petState.xp);
       d.petState.mood   = Math.min(100, d.petState.mood + 5);
+      // FIX 1: accumulate so device can delta-apply this XP on next sync
+      d.dashXpTotal = (d.dashXpTotal || 0) + habit.xpValue;
+      bumpConfig(d);
       recorded = true;
     }
   });
   const habit = data.habits.find(h => h.id === id);
   if (!habit) return res.status(404).json({ error: 'not found' });
+  if (recorded) broadcastConfigChange(data.configVersion, data.configUpdatedAt);
   res.json({ recorded, petState: data.petState });
 });
 
@@ -198,15 +212,20 @@ app.patch('/api/quests/:id', (req, res) => {
     const wasDone = q.done;
     q.done   = !!done;
     q.doneAt = q.done ? (q.doneAt || new Date().toISOString()) : null;
-    // Award XP when transitioning undone → done
+    // Award XP when transitioning undone → done.
+    // Un-checking does NOT reverse dashXpTotal — the counter is monotonic by design.
     if (!wasDone && q.done) {
       d.petState.xp   += q.xpValue;
       d.petState.stage = stageFromXP(d.petState.xp);
       d.petState.mood  = Math.min(100, d.petState.mood + 5);
+      // FIX 1: accumulate so device can delta-apply this XP on next sync
+      d.dashXpTotal = (d.dashXpTotal || 0) + q.xpValue;
+      bumpConfig(d);
     }
     updated = q;
   });
   if (!updated) return res.status(404).json({ error: 'not found' });
+  broadcastConfigChange(data.configVersion, data.configUpdatedAt);
   res.json({ quest: updated, petState: data.petState });
 });
 
@@ -305,7 +324,7 @@ app.get('/api/history/streaks', (req, res) => {
   function streakFor(habitId, habitName) {
     const dates = new Set(
       data.completionLog
-        .filter(e => e.habitId === habitId || e.habitName === habitName)
+        .filter(e => e.habitId === habitId || namesMatch(e.habitName, habitName))
         .map(e => e.date)
     );
 
@@ -393,10 +412,13 @@ app.post('/api/sync', (req, res) => {
     }
   });
   res.json({
-    habits:   data.habits.filter(h => h.active),
-    goals:    data.goals.filter(g => g.active),
-    quests:   data.quests.filter(q => q.active && !q.done),
-    settings: data.settings
+    habits:        data.habits.filter(h => h.active),
+    goals:         data.goals.filter(g => g.active),
+    quests:        data.quests.filter(q => q.active && !q.done),
+    settings:      data.settings,
+    // FIX 1: device uses these to delta-apply dashboard XP and stay in config sync
+    dashXpTotal:   data.dashXpTotal   || 0,
+    configVersion: data.configVersion || 1
   });
 });
 

@@ -31,6 +31,7 @@ struct PetState {
   int hunger;        // 0-100; drops 25/day without feeding; 0 then another day unfed = dead
   bool fedToday;     // reset to false each daily tick
   bool alive;        // false = pet died from starvation
+  int dashXpApplied; // lifetime dashboard XP already credited; delta vs server total is idempotent
 };
 
 class Pet {
@@ -59,6 +60,11 @@ public:
 
   // Total XP required to reach level L from 0 (public so dev menu can query)
   static int xpForLevel(int level);
+
+  // Apply XP awarded on the dashboard (quests, manual completions).
+  // total = server's lifetime dashXpTotal; only the delta above dashXpApplied
+  // is credited, so calling this multiple times with the same total is safe.
+  void applyDashboardXpTotal(int total);
 
   // Dev / test helpers (also useful for NVS restore path on firmware)
   void setXP(int totalXP);

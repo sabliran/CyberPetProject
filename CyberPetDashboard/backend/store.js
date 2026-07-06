@@ -59,7 +59,11 @@ const DEFAULT_DATA = {
   nextHabitId: 5,
   nextGoalId: 1,
   nextQuestId: 1,
-  nextTodoId: DEFAULT_TODOS.length + 1
+  nextTodoId: DEFAULT_TODOS.length + 1,
+  // Monotonic lifetime XP counter for dashboard-awarded XP (quests + manual
+  // habit completions). Device reads this on every sync and applies only the
+  // delta above what it has already received — idempotent, no ack needed.
+  dashXpTotal: 0
 };
 
 let cache = null;
@@ -88,6 +92,7 @@ function load() {
   if (cache.configUpdatedAt === undefined) { cache.configUpdatedAt = null; }
   if (cache.petState.hunger  === undefined) { cache.petState.hunger = 100; }
   if (cache.petState.alive   === undefined) { cache.petState.alive  = true; }
+  if (cache.dashXpTotal      === undefined) { cache.dashXpTotal = 0; }
   return cache;
 }
 

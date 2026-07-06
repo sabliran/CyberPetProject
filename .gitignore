@@ -1,5 +1,7 @@
 build_native/
 web_sim/build_wasm/
+web_sim/dist/
+CyberPetDashboard/backend/data/
 *.o
 *.a
 *.so

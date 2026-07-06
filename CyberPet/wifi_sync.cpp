@@ -75,8 +75,10 @@ bool WifiSync::sync(Pet* pet, HabitTracker* tracker) {
   String response = http.getString();
   http.end();
 
-  // Response contains { habits: [...], goals: [...], settings: {...} }
-  StaticJsonDocument<2048> respDoc;
+  // Response contains { habits, goals, settings, dashXpTotal, configVersion }.
+  // Heap-allocated: board has 8 MB PSRAM and the response can exceed 2 KB once
+  // habits + quests + goals are all included.
+  DynamicJsonDocument respDoc(6144);
   DeserializationError err = deserializeJson(respDoc, response);
   if (err) {
     Serial.print("Sync response parse error: ");
@@ -123,6 +125,12 @@ bool WifiSync::sync(Pet* pet, HabitTracker* tracker) {
     }
     if (!stillExists) tracker->removeHabit(i);
   }
+
+  // FIX 1: apply XP awarded on the dashboard (quests, manual completions).
+  // Only the delta above the last-applied total is credited — idempotent.
+  pet->applyDashboardXpTotal(respDoc["dashXpTotal"] | 0);
+  // Keep our config version in sync so checkConfig() doesn't re-trigger immediately.
+  lastKnownConfigVersion = respDoc["configVersion"] | lastKnownConfigVersion;
 
   return true;
 }

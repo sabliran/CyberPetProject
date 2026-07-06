@@ -21,9 +21,10 @@ PetState Storage::loadPet() {
     state.mood = 80;
     state.daysAlive = 0;
     state.lastCareTimestamp = 0;
-    state.hunger = 100;
-    state.fedToday = false;
-    state.alive = true;
+    state.hunger        = 100;
+    state.fedToday      = false;
+    state.alive         = true;
+    state.dashXpApplied = 0;
   }
   return state;
 }
