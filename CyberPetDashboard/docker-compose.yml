@@ -1,0 +1,12 @@
+services:
+  cyberpet-dashboard:
+    build: .
+    container_name: cyberpet-dashboard
+    ports:
+      - "8090:8080"
+    volumes:
+      - cyberpet-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  cyberpet-data:

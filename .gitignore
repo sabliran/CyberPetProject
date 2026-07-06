@@ -1,0 +1,8 @@
+build_native/
+web_sim/build_wasm/
+*.o
+*.a
+*.so
+*.d
+.DS_Store
+node_modules/
