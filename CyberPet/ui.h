@@ -57,6 +57,7 @@ private:
 
   // pet screen — hunger + mood indicators
   lv_obj_t*  hungerLabel;
+  lv_obj_t*  hungerBar;
   lv_obj_t*  moodLabel;
 
   // workout screen widgets + state
