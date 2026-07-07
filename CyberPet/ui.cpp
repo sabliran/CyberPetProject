@@ -119,9 +119,14 @@ void PetUI::buildPetScreen() {
   lv_obj_align(xpLabel, LV_ALIGN_CENTER, 0, 90);
   lv_obj_set_style_text_color(xpLabel, lv_color_hex(0x4A6080), 0);
 
+  lv_obj_t* moodBarLabel = lv_label_create(petScreen);
+  lv_label_set_text(moodBarLabel, "mood");
+  lv_obj_align(moodBarLabel, LV_ALIGN_CENTER, -100, 120);
+  lv_obj_set_style_text_color(moodBarLabel, lv_color_hex(0x2A3A50), 0);
+
   moodBar = lv_bar_create(petScreen);
-  lv_obj_set_size(moodBar, 160, 10);
-  lv_obj_align(moodBar, LV_ALIGN_CENTER, 0, 120);
+  lv_obj_set_size(moodBar, 120, 10);
+  lv_obj_align(moodBar, LV_ALIGN_CENTER, 20, 120);
   lv_bar_set_range(moodBar, 0, 100);
   lv_obj_set_style_bg_color(moodBar, lv_color_hex(0x0E0E1C), 0);
   lv_obj_set_style_bg_opa(moodBar, LV_OPA_COVER, 0);
