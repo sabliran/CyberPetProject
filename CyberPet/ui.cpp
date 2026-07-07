@@ -121,7 +121,7 @@ void PetUI::buildPetScreen() {
 
   moodBar = lv_bar_create(petScreen);
   lv_obj_set_size(moodBar, 80, 6);
-  lv_obj_align(moodBar, LV_ALIGN_TOP_RIGHT, -12, 34);
+  lv_obj_align(moodBar, LV_ALIGN_TOP_RIGHT, -12, 46);
   lv_bar_set_range(moodBar, 0, 100);
   lv_obj_set_style_bg_color(moodBar, lv_color_hex(0x0E0E1C), 0);
   lv_obj_set_style_bg_opa(moodBar, LV_OPA_COVER, 0);
@@ -130,12 +130,22 @@ void PetUI::buildPetScreen() {
   lv_obj_set_style_radius(moodBar, 5, 0);
   lv_obj_set_style_radius(moodBar, 5, LV_PART_INDICATOR);
 
+  lv_obj_t* hungerCaption = lv_label_create(petScreen);
+  lv_label_set_text(hungerCaption, "hunger");
+  lv_obj_set_pos(hungerCaption, 12, 12);
+  lv_obj_set_style_text_color(hungerCaption, lv_color_hex(0x2A4A35), 0);
+
   hungerLabel = lv_label_create(petScreen);
-  lv_obj_set_pos(hungerLabel, 12, 12);
+  lv_obj_set_pos(hungerLabel, 12, 28);
   lv_obj_set_style_text_color(hungerLabel, lv_color_hex(0x3EE8A0), 0);
 
+  lv_obj_t* moodCaption = lv_label_create(petScreen);
+  lv_label_set_text(moodCaption, "mood");
+  lv_obj_align(moodCaption, LV_ALIGN_TOP_RIGHT, -12, 12);
+  lv_obj_set_style_text_color(moodCaption, lv_color_hex(0x2A4A35), 0);
+
   moodLabel = lv_label_create(petScreen);
-  lv_obj_align(moodLabel, LV_ALIGN_TOP_RIGHT, -12, 12);
+  lv_obj_align(moodLabel, LV_ALIGN_TOP_RIGHT, -12, 28);
   lv_obj_set_style_text_color(moodLabel, lv_color_hex(0x3EE8A0), 0);
 
   lv_obj_add_flag(petScreen, LV_OBJ_FLAG_CLICKABLE);
@@ -282,7 +292,7 @@ void PetUI::refreshPetScreen() {
       lv_obj_set_style_text_color(moodLabel, lv_color_hex(0xFF4040), 0);
     }
     // Realign after text change so it stays flush to the right edge
-    lv_obj_align(moodLabel, LV_ALIGN_TOP_RIGHT, -12, 12);
+    lv_obj_align(moodLabel, LV_ALIGN_TOP_RIGHT, -12, 28);
   }
 }
 
