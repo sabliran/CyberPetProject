@@ -19,10 +19,17 @@ The page masks the canvas to a circle to mimic the 1.43" round AMOLED.
 | Flash persistence (NVS) | **Not simulated** — state resets on reload |
 | WiFi/dashboard sync | **Not built** — firmware-only |
 | RTC / real day rollover | **Simulated** — press `d` |
+| Pomodoro countdown ring | **Real** — same `ui.cpp`; 30s/10s in sim mode |
 
 Sim-only keyboard shortcuts:
 - `d` — advance one day (dailyTick + habit reset; test streaks/mood decay)
 - `x` — add 25 XP (test evolution stages quickly)
+- `space` — add a workout rep (when workout screen is active)
+- `p` — fire IMU guilt-trip (flashes Pomodoro arc red + "⚠ FOCUS!" for 1.5s; tests `pomodoroGuiltTrip()`)
+
+The native build compiles with `POMODORO_SIM_MODE`, which shortens Pomodoro
+intervals to 30 s focus / 10 s break so you can test a full cycle without
+waiting 25 minutes. The wasm build uses the real 25 min / 5 min durations.
 
 ## Build → WebAssembly
 

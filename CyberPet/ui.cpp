@@ -85,10 +85,13 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   workoutReps = 0; workoutRunning = false;
   workoutDifficulty = DIFF_MEDIUM;
   workoutElapsedMs = 0; workoutClockTimer = nullptr;
+  pomState = POM_IDLE; pomRunning = false;
+  pomBlocks = 0; pomStartMs = 0; pomElapsedMs = 0; pomClockTimer = nullptr;
   srand((unsigned)lv_tick_get() ^ 0xBEEF);
   buildPetScreen();
   buildHabitScreen();
   buildWorkoutScreen();
+  buildPomodoroScreen();
   lv_scr_load(petScreen);
   refreshPetScreen();
 }
@@ -199,9 +202,10 @@ void PetUI::buildHabitScreen() {
   lv_obj_set_style_pad_row(habitList, 6, 0);
   lv_obj_set_style_pad_all(habitList, 8, 0);
 
+  // Bottom nav bar: 3 equal buttons (130px × 38px, 19px gap, 19px side margin)
   lv_obj_t* backBtn = lv_btn_create(habitScreen);
-  lv_obj_set_size(backBtn, 180, 38);
-  lv_obj_align(backBtn, LV_ALIGN_BOTTOM_MID, -100, -10);
+  lv_obj_set_size(backBtn, 130, 38);
+  lv_obj_align(backBtn, LV_ALIGN_BOTTOM_MID, -149, -10);
   lv_obj_set_style_bg_color(backBtn, lv_color_hex(0x0D0D22), 0);
   lv_obj_set_style_bg_opa(backBtn, LV_OPA_COVER, 0);
   lv_obj_set_style_border_color(backBtn, lv_color_hex(0x2A2A66), 0);
@@ -213,8 +217,8 @@ void PetUI::buildHabitScreen() {
   lv_obj_add_event_cb(backBtn, goToPetEventCB, LV_EVENT_CLICKED, this);
 
   lv_obj_t* workoutBtn = lv_btn_create(habitScreen);
-  lv_obj_set_size(workoutBtn, 180, 38);
-  lv_obj_align(workoutBtn, LV_ALIGN_BOTTOM_MID, 100, -10);
+  lv_obj_set_size(workoutBtn, 130, 38);
+  lv_obj_align(workoutBtn, LV_ALIGN_BOTTOM_MID, 0, -10);
   lv_obj_set_style_bg_color(workoutBtn, lv_color_hex(0x142A1C), 0);
   lv_obj_set_style_bg_opa(workoutBtn, LV_OPA_COVER, 0);
   lv_obj_set_style_border_color(workoutBtn, lv_color_hex(0x3EE8A0), 0);
@@ -224,6 +228,19 @@ void PetUI::buildHabitScreen() {
   lv_obj_set_style_text_color(workoutBtnLbl, lv_color_hex(0x3EE8A0), 0);
   lv_obj_center(workoutBtnLbl);
   lv_obj_add_event_cb(workoutBtn, workoutGoToCB, LV_EVENT_CLICKED, this);
+
+  lv_obj_t* pomBtn = lv_btn_create(habitScreen);
+  lv_obj_set_size(pomBtn, 130, 38);
+  lv_obj_align(pomBtn, LV_ALIGN_BOTTOM_MID, 149, -10);
+  lv_obj_set_style_bg_color(pomBtn, lv_color_hex(0x2A1400), 0);
+  lv_obj_set_style_bg_opa(pomBtn, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(pomBtn, lv_color_hex(0xE87030), 0);
+  lv_obj_set_style_border_width(pomBtn, 2, 0);
+  lv_obj_t* pomBtnLbl = lv_label_create(pomBtn);
+  lv_label_set_text(pomBtnLbl, LV_SYMBOL_PAUSE " Focus");
+  lv_obj_set_style_text_color(pomBtnLbl, lv_color_hex(0xE87030), 0);
+  lv_obj_center(pomBtnLbl);
+  lv_obj_add_event_cb(pomBtn, pomGoToCB, LV_EVENT_CLICKED, this);
 }
 
 /* ---- pet screen refresh ------------------------------------------ */
@@ -991,4 +1008,263 @@ void PetUI::workoutDiffBtnCB(lv_event_t* e) {
   // Reset done label to show new target
   int target = WORKOUT_TARGETS[idx];
   lv_label_set_text_fmt(self->workoutDoneLabel, LV_SYMBOL_OK "  DONE (need %d)", target);
+}
+
+/* ---- pomodoro screen --------------------------------------------- */
+
+#ifdef POMODORO_SIM_MODE
+static const uint32_t POMODORO_FOCUS_MS = 30 * 1000;
+static const uint32_t POMODORO_BREAK_MS = 10 * 1000;
+#else
+static const uint32_t POMODORO_FOCUS_MS = 25 * 60 * 1000;
+static const uint32_t POMODORO_BREAK_MS = 5  * 60 * 1000;
+#endif
+static const int POMODORO_XP = 25;
+
+void PetUI::buildPomodoroScreen() {
+  pomodoroScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(pomodoroScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(pomodoroScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* title = lv_label_create(pomodoroScreen);
+  lv_label_set_text(title, "FOCUS TIMER");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
+  lv_obj_set_style_text_color(title, lv_color_hex(0x804020), 0);
+
+  // Ring arc — PART_MAIN = dark track, PART_INDICATOR = countdown progress
+  pomArc = lv_arc_create(pomodoroScreen);
+  lv_obj_set_size(pomArc, 350, 350);
+  lv_obj_align(pomArc, LV_ALIGN_CENTER, 0, -10);
+  lv_arc_set_rotation(pomArc, 270);        // visual start at 12 o'clock
+  lv_arc_set_bg_angles(pomArc, 0, 359);   // full circle track (359° avoids wrap glitch)
+  lv_arc_set_range(pomArc, 0, 1000);
+  lv_arc_set_value(pomArc, 1000);          // full ring at start
+
+  lv_obj_set_style_arc_color(pomArc, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
+  lv_obj_set_style_arc_width(pomArc, 18, LV_PART_MAIN);
+  lv_obj_set_style_arc_color(pomArc, lv_color_hex(0xE87030), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(pomArc, 18, LV_PART_INDICATOR);
+  lv_obj_set_style_opa(pomArc, LV_OPA_TRANSP, LV_PART_KNOB);
+  lv_obj_set_style_bg_opa(pomArc, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(pomArc, LV_OBJ_FLAG_CLICKABLE);
+
+  // Countdown display inside the ring
+  pomTimeLabel = lv_label_create(pomodoroScreen);
+  lv_label_set_text(pomTimeLabel, "25:00");
+  lv_obj_set_style_text_font(pomTimeLabel, &lv_font_montserrat_32, 0);
+  lv_obj_set_style_text_color(pomTimeLabel, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(pomTimeLabel, LV_ALIGN_CENTER, 0, -20);
+
+  pomModeLabel = lv_label_create(pomodoroScreen);
+  lv_label_set_text(pomModeLabel, "FOCUS");
+  lv_obj_set_style_text_color(pomModeLabel, lv_color_hex(0x604020), 0);
+  lv_obj_align(pomModeLabel, LV_ALIGN_CENTER, 0, 18);
+
+  pomBlockLabel = lv_label_create(pomodoroScreen);
+  lv_label_set_text(pomBlockLabel, "");
+  lv_obj_set_style_text_color(pomBlockLabel, lv_color_hex(0x503010), 0);
+  lv_obj_align(pomBlockLabel, LV_ALIGN_CENTER, 0, 50);
+
+  // START / PAUSE button
+  lv_obj_t* startBtn = lv_btn_create(pomodoroScreen);
+  lv_obj_set_size(startBtn, 195, 44);
+  lv_obj_align(startBtn, LV_ALIGN_BOTTOM_MID, -65, -8);
+  lv_obj_set_style_bg_color(startBtn, lv_color_hex(0x3A1800), 0);
+  lv_obj_set_style_bg_opa(startBtn, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(startBtn, 10, 0);
+  lv_obj_set_style_border_color(startBtn, lv_color_hex(0xE87030), 0);
+  lv_obj_set_style_border_width(startBtn, 2, 0);
+  pomStartLabel = lv_label_create(startBtn);
+  lv_label_set_text(pomStartLabel, LV_SYMBOL_PLAY "  START");
+  lv_obj_set_style_text_color(pomStartLabel, lv_color_hex(0xE87030), 0);
+  lv_obj_center(pomStartLabel);
+  lv_obj_add_event_cb(startBtn, pomStartBtnCB, LV_EVENT_CLICKED, this);
+
+  // CANCEL button
+  lv_obj_t* cancelBtn = lv_btn_create(pomodoroScreen);
+  lv_obj_set_size(cancelBtn, 120, 44);
+  lv_obj_align(cancelBtn, LV_ALIGN_BOTTOM_MID, 103, -8);
+  lv_obj_set_style_bg_color(cancelBtn, lv_color_hex(0x161630), 0);
+  lv_obj_set_style_bg_opa(cancelBtn, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(cancelBtn, 10, 0);
+  lv_obj_set_style_border_color(cancelBtn, lv_color_hex(0x6060C0), 0);
+  lv_obj_set_style_border_width(cancelBtn, 2, 0);
+  lv_obj_t* cancelLbl = lv_label_create(cancelBtn);
+  lv_label_set_text(cancelLbl, LV_SYMBOL_LEFT " Cancel");
+  lv_obj_set_style_text_color(cancelLbl, lv_color_hex(0xA0A0F0), 0);
+  lv_obj_center(cancelLbl);
+  lv_obj_add_event_cb(cancelBtn, pomCancelBtnCB, LV_EVENT_CLICKED, this);
+}
+
+// Updates arc value, time label, mode label, and block dots from current state.
+void PetUI::refreshPomodoroRing() {
+  bool isFocus = (pomState == POM_FOCUS);
+
+  lv_color_t col = isFocus ? lv_color_hex(0xE87030) : lv_color_hex(0x3EE8A0);
+  lv_obj_set_style_arc_color(pomArc, col, LV_PART_INDICATOR);
+  lv_arc_set_value(pomArc, 1000);  // reset to full for new interval
+
+  uint32_t blockMs   = isFocus ? POMODORO_FOCUS_MS : POMODORO_BREAK_MS;
+  uint32_t totalSecs = blockMs / 1000;
+  lv_label_set_text_fmt(pomTimeLabel, "%02u:%02u", totalSecs / 60, totalSecs % 60);
+  lv_obj_set_style_text_color(pomTimeLabel, lv_color_hex(0xFFFFFF), 0);
+
+  if (pomState == POM_IDLE) {
+    lv_label_set_text(pomModeLabel, "FOCUS");
+    lv_obj_set_style_text_color(pomModeLabel, lv_color_hex(0x604020), 0);
+  } else if (isFocus) {
+    lv_label_set_text(pomModeLabel, "FOCUS");
+    lv_obj_set_style_text_color(pomModeLabel, lv_color_hex(0xE87030), 0);
+  } else {
+    lv_label_set_text(pomModeLabel, "BREAK");
+    lv_obj_set_style_text_color(pomModeLabel, lv_color_hex(0x3EE8A0), 0);
+  }
+
+  // Block progress: "✓ ✓ ─ ─" (4 slots)
+  char dots[64] = {};
+  int pos = 0;
+  for (int i = 0; i < 4; i++) {
+    if (i > 0) { dots[pos++] = ' '; }
+    const char* sym = (i < pomBlocks) ? LV_SYMBOL_OK : LV_SYMBOL_MINUS;
+    for (const char* c = sym; *c; c++) dots[pos++] = *c;
+  }
+  dots[pos] = '\0';
+  lv_label_set_text(pomBlockLabel, dots);
+  lv_obj_set_style_text_color(pomBlockLabel,
+    isFocus ? lv_color_hex(0x804020) : lv_color_hex(0x30806A), 0);
+}
+
+void PetUI::showPomodoroScreen() {
+  // Reset to fresh focus state; keep block count for session continuity
+  pomRunning    = false;
+  pomElapsedMs  = 0;
+  pomStartMs    = 0;
+  if (pomClockTimer) { lv_timer_del(pomClockTimer); pomClockTimer = nullptr; }
+
+  // On first open: POM_IDLE → show default countdown, dimmed labels
+  // On re-open mid-session: preserve pomState/pomBlocks
+  if (pomState == POM_IDLE) {
+    pomBlocks = 0;
+    uint32_t totalSecs = POMODORO_FOCUS_MS / 1000;
+    lv_label_set_text_fmt(pomTimeLabel, "%02u:%02u", totalSecs / 60, totalSecs % 60);
+    lv_obj_set_style_arc_color(pomArc, lv_color_hex(0xE87030), LV_PART_INDICATOR);
+    lv_arc_set_value(pomArc, 1000);
+    lv_label_set_text(pomModeLabel, "FOCUS");
+    lv_obj_set_style_text_color(pomModeLabel, lv_color_hex(0x604020), 0);
+    lv_label_set_text(pomBlockLabel, "");
+  }
+
+  lv_label_set_text(pomStartLabel, LV_SYMBOL_PLAY "  START");
+  lv_scr_load_anim(pomodoroScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 200, 0, false);
+}
+
+void PetUI::pomGoToCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->pomState = POM_IDLE;  // always start fresh from habit screen
+  self->showPomodoroScreen();
+}
+
+void PetUI::pomStartBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+
+  if (self->pomState == POM_IDLE) {
+    // First START — begin a focus block
+    self->pomState    = POM_FOCUS;
+    self->pomRunning  = true;
+    self->pomElapsedMs = 0;
+    self->pomStartMs  = lv_tick_get();
+    self->refreshPomodoroRing();
+    lv_label_set_text(self->pomStartLabel, LV_SYMBOL_PAUSE "  PAUSE");
+    if (!self->pomClockTimer)
+      self->pomClockTimer = lv_timer_create(pomClockCB, 500, self);
+    return;
+  }
+
+  if (self->pomRunning) {
+    // Pause
+    self->pomElapsedMs += lv_tick_get() - self->pomStartMs;
+    self->pomRunning = false;
+    lv_label_set_text(self->pomStartLabel, LV_SYMBOL_PLAY "  RESUME");
+  } else {
+    // Resume
+    self->pomStartMs = lv_tick_get();
+    self->pomRunning = true;
+    lv_label_set_text(self->pomStartLabel, LV_SYMBOL_PAUSE "  PAUSE");
+  }
+}
+
+void PetUI::pomCancelBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->pomRunning = false;
+  self->pomState   = POM_IDLE;
+  if (self->pomClockTimer) { lv_timer_del(self->pomClockTimer); self->pomClockTimer = nullptr; }
+  lv_scr_load_anim(self->habitScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 200, 0, false);
+}
+
+void PetUI::pomClockCB(lv_timer_t* t) {
+  PetUI* self = (PetUI*)t->user_data;
+  if (!self->pomRunning) return;
+
+  uint32_t totalMs = self->pomElapsedMs + (lv_tick_get() - self->pomStartMs);
+  uint32_t blockMs = (self->pomState == POM_FOCUS) ? POMODORO_FOCUS_MS : POMODORO_BREAK_MS;
+
+  if (totalMs >= blockMs) {
+    // Block complete
+    self->pomRunning  = false;
+    self->pomElapsedMs = 0;
+    self->pomStartMs   = lv_tick_get();
+
+    if (self->pomState == POM_FOCUS) {
+      self->pomBlocks++;
+      self->pet->addXP(POMODORO_XP);
+
+      // XP popup centered on the arc
+      lv_area_t area;
+      lv_obj_get_coords(self->pomArc, &area);
+      self->showXpPopup(area, POMODORO_XP);
+
+      // Transition to break
+      self->pomState = POM_BREAK;
+    } else {
+      // Break over — next focus block; auto-arm but wait for START
+      self->pomState = POM_FOCUS;
+    }
+
+    self->refreshPomodoroRing();
+    lv_label_set_text(self->pomStartLabel,
+      self->pomState == POM_BREAK
+        ? LV_SYMBOL_PLAY "  START BREAK"
+        : LV_SYMBOL_PLAY "  START");
+    // Auto-start the next interval
+    self->pomRunning  = true;
+    self->pomStartMs  = lv_tick_get();
+    lv_label_set_text(self->pomStartLabel, LV_SYMBOL_PAUSE "  PAUSE");
+    return;
+  }
+
+  // Update ring + countdown display
+  uint32_t remaining = blockMs - totalMs;
+  int permille = (int)(remaining * 1000 / blockMs);
+  lv_arc_set_value(self->pomArc, permille);
+
+  uint32_t secs = (remaining + 999) / 1000;  // ceil to avoid "0:00" flash early
+  lv_label_set_text_fmt(self->pomTimeLabel, "%02u:%02u", secs / 60, secs % 60);
+}
+
+void PetUI::pomodoroGuiltTrip() {
+  if (pomState != POM_FOCUS || !pomRunning) return;
+  // Flash arc red and scold the user for picking up the device mid-focus
+  lv_obj_set_style_arc_color(pomArc, lv_color_hex(0xFF3030), LV_PART_INDICATOR);
+  lv_label_set_text(pomModeLabel, LV_SYMBOL_WARNING " FOCUS!");
+  lv_obj_set_style_text_color(pomModeLabel, lv_color_hex(0xFF3030), 0);
+  lv_timer_t* rv = lv_timer_create(pomGuiltRevertCB, 1500, this);
+  lv_timer_set_repeat_count(rv, 1);
+}
+
+void PetUI::pomGuiltRevertCB(lv_timer_t* t) {
+  PetUI* self = (PetUI*)t->user_data;
+  if (self->pomState != POM_FOCUS) return;
+  lv_obj_set_style_arc_color(self->pomArc, lv_color_hex(0xE87030), LV_PART_INDICATOR);
+  lv_label_set_text(self->pomModeLabel, "FOCUS");
+  lv_obj_set_style_text_color(self->pomModeLabel, lv_color_hex(0xE87030), 0);
 }

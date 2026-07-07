@@ -9,7 +9,13 @@ key, no cloud dependency, runs standalone on-device.
 - **Pet screen** — shows your blob (color/size reflects evolution stage),
   current XP, mood bar. Tap anywhere to go to the habit list.
 - **Habit screen** — list of habits with checkboxes. Tap one to mark it done
-  for the day and award XP to your pet. Tap "Back to pet" to return.
+  for the day and award XP to your pet. Three navigation buttons at the bottom:
+  Back, Workout, and Focus (Pomodoro).
+- **Pomodoro screen** — a ring-shaped countdown on the round display: 25 min
+  focus block / 5 min break, cycling up to 4 blocks per session. Each completed
+  focus block awards +25 XP and shows a popup. If the device is picked up
+  mid-focus (IMU), `pomodoroGuiltTrip()` flashes the arc red with "⚠ FOCUS!"
+  for 1.5 s before reverting.
 - **Evolution stages** — Egg → Blob → Creature → Evolved, based on total XP.
 - **Mood** — rises when you complete habits, decays if you skip a whole day.
   Doesn't currently affect evolution, just gives visual/emotional feedback —
@@ -28,7 +34,7 @@ key, no cloud dependency, runs standalone on-device.
 | `pet.h/.cpp` | Pet XP, evolution stage, mood logic |
 | `habits.h/.cpp` | Habit list, streaks, daily completion tracking |
 | `storage.h/.cpp` | Save/load pet + habit state to flash (NVS) |
-| `ui.h/.cpp` | LVGL screens (pet view + habit list) |
+| `ui.h/.cpp` | LVGL screens (pet view, habit list, workout, Pomodoro) |
 | `wifi_sync.h/.cpp` | Optional sync client for the CyberPetDashboard API |
 | `CyberPet.ino` | Integration skeleton — glues everything together |
 
@@ -227,14 +233,11 @@ tap. All of these feed naturally into the existing XP/mood system.
   sensing. (True posture sensing would need a wearable IMU or a camera —
   a separate ESP32 + IMU clipped to a chair back is a fun follow-up
   project that could report to the same dashboard API.)
-- **Pomodoro mode** — a natural fit for a round desk screen. Third LVGL
-  screen with a ring-shaped countdown (the circular display is literally
-  made for this): 25 min focus / 5 min break, pet visibly "concentrates"
-  during focus blocks and celebrates on completion. Completed pomodoros
-  award XP like any habit, and a "N pomodoros today" counter can feed a
-  weekly goal. The IMU adds a nice touch: if the device gets picked up or
-  moved mid-focus-block (i.e., you grabbed your phone... or the pet), it
-  can guilt-trip you with a disappointed blob face.
+- **Pomodoro mode** — ✅ DONE, see `ui.cpp`. Ring-shaped countdown on the
+  round display, 25 min focus / 5 min break, up to 4 blocks per session,
+  +25 XP per completed block with XP popup. IMU guilt-trip on pickup via
+  `pomodoroGuiltTrip()` (red arc flash + "⚠ FOCUS!" for 1.5s). Accessible
+  from the Focus button on the habit screen.
 
 ### Porting notes (for future hardware)
 

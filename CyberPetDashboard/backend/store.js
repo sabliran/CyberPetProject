@@ -1,7 +1,14 @@
-const fs = require('fs');
-const path = require('path');
+'use strict';
 
-const DATA_FILE = path.join(__dirname, 'data', 'store.json');
+const fs   = require('fs');
+const path = require('path');
+const Database = require('better-sqlite3');
+
+const DATA_DIR  = path.join(__dirname, 'data');
+const DB_FILE   = path.join(DATA_DIR, 'store.db');
+const JSON_FILE = path.join(DATA_DIR, 'store.json');  // legacy — migrated on first run
+
+// ── Default data ─────────────────────────────────────────────────────────────
 
 const DEFAULT_TODOS = [
   // ── hardware ──────────────────────────────────────────────────────────────
@@ -24,13 +31,11 @@ const DEFAULT_TODOS = [
   { id: 14, text: 'Add push-style config reload so device picks up changes instantly', done: false, category: 'dashboard' },
 
   // ── known gaps (from README) ───────────────────────────────────────────────
-  // firmware
   { id: 15, text: 'RTC midnight reset via PCF85063 — replace millis() daily tick (drifts, wrong time after reboot)', done: false, category: 'firmware' },
   { id: 16, text: 'Wire dashboard settings into firmware: moodGainPerHabit, moodDecayPerMiss, dailyResetHour', done: false, category: 'firmware' },
   { id: 17, text: 'Add serverId to Habit struct — fix rename-resets-streak (currently name-based reconciliation)', done: false, category: 'firmware' },
   { id: 18, text: 'Sync goals to on-device screen (API + dashboard UI exist; wifi_sync.cpp not wired)', done: false, category: 'firmware' },
   { id: 19, text: 'Upgrade ArduinoJson v6 → v7: rename StaticJsonDocument to JsonDocument (two-line change)', done: false, category: 'firmware' },
-  // dashboard
   { id: 20, text: 'Store completion history per-date (server currently keeps only latest completion list)', done: false, category: 'dashboard' },
   { id: 21, text: 'Add auth before exposing dashboard outside LAN — no auth currently', done: false, category: 'dashboard' },
   { id: 22, text: 'Swap single JSON file store for SQLite/DB for history & analytics (isolated in store.js)', done: false, category: 'dashboard' },
@@ -66,9 +71,9 @@ const DEFAULT_DATA = {
   quests: [],
   todos: DEFAULT_TODOS,
   devNotes: '',
-  completionLog: [],   // { id, habitId, habitName, xpValue, date (YYYY-MM-DD), completedAt }
+  completionLog: [],
   nextLogId: 1,
-  configVersion: 1,    // bumps whenever settings/habits change; device polls this to detect config drift
+  configVersion: 1,
   configUpdatedAt: null,
   settings: {
     petName: 'Blob',
@@ -91,60 +96,238 @@ const DEFAULT_DATA = {
   nextGoalId: 1,
   nextQuestId: 1,
   nextTodoId: DEFAULT_TODOS.length + 1,
-  // Monotonic lifetime XP counter for dashboard-awarded XP (quests + manual
-  // habit completions). Device reads this on every sync and applies only the
-  // delta above what it has already received — idempotent, no ack needed.
   dashXpTotal: 0
 };
 
+// ── DB init ───────────────────────────────────────────────────────────────────
+
+let _db   = null;
 let cache = null;
 
-function ensureFile() {
-  const dir = path.dirname(DATA_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(DATA_FILE)) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(DEFAULT_DATA, null, 2));
+function getDb() {
+  if (_db) return _db;
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  _db = new Database(DB_FILE);
+  _db.pragma('journal_mode = WAL');
+  _db.exec(`
+    CREATE TABLE IF NOT EXISTS habits (
+      id       INTEGER PRIMARY KEY,
+      name     TEXT    NOT NULL,
+      xp_value INTEGER NOT NULL DEFAULT 0,
+      active   INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS goals (
+      id       INTEGER PRIMARY KEY,
+      name     TEXT    NOT NULL,
+      xp_value INTEGER NOT NULL DEFAULT 0,
+      period   TEXT    NOT NULL DEFAULT 'weekly',
+      active   INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS quests (
+      id          INTEGER PRIMARY KEY,
+      name        TEXT    NOT NULL,
+      xp_value    INTEGER NOT NULL DEFAULT 0,
+      description TEXT    NOT NULL DEFAULT '',
+      done        INTEGER NOT NULL DEFAULT 0,
+      done_at     TEXT,
+      active      INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS todos (
+      id       INTEGER PRIMARY KEY,
+      text     TEXT    NOT NULL,
+      done     INTEGER NOT NULL DEFAULT 0,
+      category TEXT    NOT NULL DEFAULT 'general'
+    );
+    CREATE TABLE IF NOT EXISTS completion_log (
+      id           INTEGER PRIMARY KEY,
+      habit_id     INTEGER,
+      habit_name   TEXT    NOT NULL,
+      xp_value     INTEGER NOT NULL DEFAULT 0,
+      date         TEXT    NOT NULL,
+      completed_at TEXT    NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_log_date ON completion_log(date);
+    CREATE TABLE IF NOT EXISTS kv (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+  return _db;
+}
+
+// ── Read / write helpers ──────────────────────────────────────────────────────
+
+function kvGet(db, key, fallback) {
+  const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key);
+  return row !== undefined ? JSON.parse(row.value) : fallback;
+}
+
+function readFromDb(db) {
+  const habits = db.prepare('SELECT id, name, xp_value, active FROM habits').all()
+    .map(r => ({ id: r.id, name: r.name, xpValue: r.xp_value, active: !!r.active }));
+
+  const goals = db.prepare('SELECT id, name, xp_value, period, active FROM goals').all()
+    .map(r => ({ id: r.id, name: r.name, xpValue: r.xp_value, period: r.period, active: !!r.active }));
+
+  const quests = db.prepare('SELECT id, name, xp_value, description, done, done_at, active FROM quests').all()
+    .map(r => ({ id: r.id, name: r.name, xpValue: r.xp_value, description: r.description,
+                 done: !!r.done, doneAt: r.done_at, active: !!r.active }));
+
+  const todos = db.prepare('SELECT id, text, done, category FROM todos').all()
+    .map(r => ({ id: r.id, text: r.text, done: !!r.done, category: r.category }));
+
+  const completionLog = db.prepare(
+    'SELECT id, habit_id, habit_name, xp_value, date, completed_at FROM completion_log'
+  ).all().map(r => ({
+    id: r.id, habitId: r.habit_id, habitName: r.habit_name,
+    xpValue: r.xp_value, date: r.date, completedAt: r.completed_at
+  }));
+
+  return {
+    habits, goals, quests, todos, completionLog,
+    devNotes:        kvGet(db, 'devNotes',        ''),
+    nextHabitId:     kvGet(db, 'nextHabitId',     DEFAULT_DATA.nextHabitId),
+    nextGoalId:      kvGet(db, 'nextGoalId',      DEFAULT_DATA.nextGoalId),
+    nextQuestId:     kvGet(db, 'nextQuestId',     DEFAULT_DATA.nextQuestId),
+    nextTodoId:      kvGet(db, 'nextTodoId',      DEFAULT_DATA.nextTodoId),
+    nextLogId:       kvGet(db, 'nextLogId',       DEFAULT_DATA.nextLogId),
+    dashXpTotal:     kvGet(db, 'dashXpTotal',     0),
+    configVersion:   kvGet(db, 'configVersion',   1),
+    configUpdatedAt: kvGet(db, 'configUpdatedAt', null),
+    settings:        kvGet(db, 'settings',        DEFAULT_DATA.settings),
+    petState:        kvGet(db, 'petState',        DEFAULT_DATA.petState),
+  };
+}
+
+const KV_KEYS = [
+  'devNotes', 'nextHabitId', 'nextGoalId', 'nextQuestId', 'nextTodoId',
+  'nextLogId', 'dashXpTotal', 'configVersion', 'configUpdatedAt', 'settings', 'petState'
+];
+
+function writeToDb(db, data) {
+  db.transaction(() => {
+    db.prepare('DELETE FROM habits').run();
+    const ih = db.prepare('INSERT INTO habits (id, name, xp_value, active) VALUES (?,?,?,?)');
+    for (const h of data.habits) ih.run(h.id, h.name, h.xpValue, h.active ? 1 : 0);
+
+    db.prepare('DELETE FROM goals').run();
+    const ig = db.prepare('INSERT INTO goals (id, name, xp_value, period, active) VALUES (?,?,?,?,?)');
+    for (const g of data.goals) ig.run(g.id, g.name, g.xpValue, g.period, g.active ? 1 : 0);
+
+    db.prepare('DELETE FROM quests').run();
+    const iq = db.prepare(
+      'INSERT INTO quests (id, name, xp_value, description, done, done_at, active) VALUES (?,?,?,?,?,?,?)'
+    );
+    for (const q of data.quests)
+      iq.run(q.id, q.name, q.xpValue, q.description || '', q.done ? 1 : 0, q.doneAt ?? null, q.active ? 1 : 0);
+
+    db.prepare('DELETE FROM todos').run();
+    const it = db.prepare('INSERT INTO todos (id, text, done, category) VALUES (?,?,?,?)');
+    for (const t of data.todos) it.run(t.id, t.text, t.done ? 1 : 0, t.category);
+
+    db.prepare('DELETE FROM completion_log').run();
+    const il = db.prepare(
+      'INSERT INTO completion_log (id, habit_id, habit_name, xp_value, date, completed_at) VALUES (?,?,?,?,?,?)'
+    );
+    for (const e of data.completionLog)
+      il.run(e.id, e.habitId ?? null, e.habitName, e.xpValue, e.date, e.completedAt);
+
+    const uk = db.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?,?)');
+    for (const k of KV_KEYS) {
+      if (data[k] !== undefined) uk.run(k, JSON.stringify(data[k]));
+    }
+  })();
+}
+
+// ── Migration from store.json ─────────────────────────────────────────────────
+
+function migrateFromJson(db) {
+  if (!fs.existsSync(JSON_FILE)) return;
+
+  const hasData =
+    db.prepare('SELECT COUNT(*) as n FROM habits').get().n > 0 ||
+    db.prepare('SELECT COUNT(*) as n FROM kv').get().n > 0;
+
+  if (hasData) {
+    // SQLite already populated; retire the JSON file
+    try { fs.renameSync(JSON_FILE, JSON_FILE + '.migrated'); } catch (_) {}
+    return;
+  }
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(JSON_FILE, 'utf-8'));
+
+    // Same field migrations as the old load()
+    if (!raw.quests)                          raw.quests = [];
+    if (!raw.todos)                           { raw.todos = DEFAULT_TODOS; raw.nextTodoId = DEFAULT_TODOS.length + 1; }
+    if (raw.devNotes === undefined)           raw.devNotes = '';
+    if (!raw.nextQuestId)                     raw.nextQuestId = 1;
+    if (!raw.completionLog)                   raw.completionLog = [];
+    if (!raw.nextLogId)                       raw.nextLogId = 1;
+    if (!raw.configVersion)                   raw.configVersion = 1;
+    if (raw.configUpdatedAt === undefined)    raw.configUpdatedAt = null;
+    if (raw.petState.hunger  === undefined)   raw.petState.hunger = 100;
+    if (raw.petState.alive   === undefined)   raw.petState.alive  = true;
+    if (raw.dashXpTotal      === undefined)   raw.dashXpTotal = 0;
+
+    writeToDb(db, raw);
+    fs.renameSync(JSON_FILE, JSON_FILE + '.migrated');
+    console.log('[store] Migrated store.json → store.db');
+  } catch (e) {
+    console.error('[store] JSON migration failed:', e.message);
   }
 }
 
+// ── Seed defaults + merge new default todos ───────────────────────────────────
+
+function seedOrMerge(db) {
+  const empty =
+    db.prepare('SELECT COUNT(*) as n FROM habits').get().n === 0 &&
+    db.prepare('SELECT COUNT(*) as n FROM kv').get().n === 0;
+
+  if (empty) {
+    writeToDb(db, DEFAULT_DATA);
+    return;
+  }
+
+  // Inject any DEFAULT_TODOS whose id isn't in the todos table yet
+  const existing = new Set(db.prepare('SELECT id FROM todos').all().map(r => r.id));
+  const ins = db.prepare('INSERT INTO todos (id, text, done, category) VALUES (?,?,?,?)');
+  let maxNew = 0;
+  db.transaction(() => {
+    for (const t of DEFAULT_TODOS) {
+      if (!existing.has(t.id)) {
+        ins.run(t.id, t.text, t.done ? 1 : 0, t.category);
+        if (t.id > maxNew) maxNew = t.id;
+      }
+    }
+  })();
+
+  if (maxNew > 0) {
+    const cur = kvGet(db, 'nextTodoId', 1);
+    if (maxNew + 1 > cur) {
+      db.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?,?)')
+        .run('nextTodoId', JSON.stringify(maxNew + 1));
+    }
+  }
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
 function load() {
   if (cache) return cache;
-  ensureFile();
-  const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-  cache = JSON.parse(raw);
-  // Migrate: add missing top-level fields if store predates this version
-  if (!cache.quests)        { cache.quests = []; }
-  if (!cache.todos)         { cache.todos = DEFAULT_TODOS; cache.nextTodoId = DEFAULT_TODOS.length + 1; }
-  // Merge any new default todos that aren't in the store yet (keyed by id)
-  DEFAULT_TODOS.forEach(t => {
-    if (!cache.todos.some(e => e.id === t.id)) {
-      cache.todos.push(t);
-      if (cache.nextTodoId <= t.id) cache.nextTodoId = t.id + 1;
-    }
-  });
-  if (cache.devNotes === undefined) { cache.devNotes = ''; }
-  if (!cache.nextQuestId)   { cache.nextQuestId = 1; }
-  if (!cache.completionLog)  { cache.completionLog = []; }
-  if (!cache.nextLogId)      { cache.nextLogId = 1; }
-  if (!cache.configVersion)  { cache.configVersion = 1; }
-  if (cache.configUpdatedAt === undefined) { cache.configUpdatedAt = null; }
-  if (cache.petState.hunger  === undefined) { cache.petState.hunger = 100; }
-  if (cache.petState.alive   === undefined) { cache.petState.alive  = true; }
-  if (cache.dashXpTotal      === undefined) { cache.dashXpTotal = 0; }
+  const db = getDb();
+  migrateFromJson(db);
+  seedOrMerge(db);
+  cache = readFromDb(db);
   return cache;
 }
 
 function save() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(cache, null, 2));
+  writeToDb(getDb(), cache);
 }
 
-function get() { return load(); }
-
-function update(mutatorFn) {
-  const data = load();
-  mutatorFn(data);
-  save();
-  return data;
-}
+function get()             { return load(); }
+function update(mutatorFn) { const d = load(); mutatorFn(d); save(); return d; }
 
 module.exports = { get, update };

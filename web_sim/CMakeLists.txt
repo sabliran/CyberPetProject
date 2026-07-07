@@ -43,4 +43,6 @@ else()
   # Native desktop build (quick local testing without a browser)
   find_package(SDL2 REQUIRED)
   target_link_libraries(cyberpet_sim PRIVATE SDL2::SDL2)
+  # Short Pomodoro intervals (30s focus / 10s break) so you can test without waiting 25 min
+  target_compile_definitions(cyberpet_sim PRIVATE POMODORO_SIM_MODE)
 endif()

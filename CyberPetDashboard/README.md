@@ -62,6 +62,38 @@ network calls — the dashboard becomes optional, not required.
 | GET | `/api/pet` | Last-synced pet state |
 | POST | `/api/sync` | Device sync endpoint: accepts `{deviceId, petState, completedHabits: [names]}`, returns current habits/goals/settings |
 
+## Storage
+
+Data lives in `better-sqlite3` (synchronous SQLite). The database file is at
+`/app/data/store.db` inside the container — persisted in the `cyberpet-data`
+Docker volume. Schema:
+
+| Table | Contents |
+|---|---|
+| `habits` | habit definitions (id, name, xpValue, active) |
+| `goals` | goal definitions (id, name, xpValue, period, active) |
+| `quests` | quest definitions (id, name, xpValue, description, done, done_at, active) |
+| `todos` | todo items (id, text, done, category) |
+| `completion_log` | every habit check-off with date + timestamp (indexed by date) |
+| `kv` | JSON-encoded scalars: petState, settings, counters, dashXpTotal |
+
+On first run, if a legacy `store.json` exists in `/app/data/`, it is
+automatically migrated and renamed to `store.json.migrated`. The Dockerfile
+uses a multi-stage build so native `better-sqlite3` binaries are compiled
+against Alpine's musl libc inside the builder container, not copied from the
+host.
+
+## Fixed in the v4 revision
+
+- **SQLite backend** — replaced the single-JSON-file store (`store.js`) with
+  `better-sqlite3`. Same `get()`/`update()` API, zero changes to server
+  routes. Gains: proper relational schema, indexed `completion_log` for future
+  analytics, WAL journal mode, auto-migration from `store.json`.
+- **Multi-stage Dockerfile** — builder stage compiles native addons with
+  `python3`/`make`/`g++`; runtime stage copies only the finished binary.
+  `.dockerignore` excludes `backend/node_modules` so local binaries never
+  pollute the Alpine container.
+
 ## Fixed in the v3 revision
 
 - **Dashboard XP was silently discarded by the device** — XP awarded via quests
@@ -104,9 +136,9 @@ network calls — the dashboard becomes optional, not required.
 - **Goals aren't synced to the device yet** — the API and dashboard UI for
   goals are complete, but `wifi_sync.cpp` only pulls/pushes habits and pet
   state right now.
-- **Completion history isn't stored** — the server only keeps the *latest*
-  completion list (`lastCompletedHabits`). If you want streak charts on
-  the dashboard, append to a dated history array in `store.js` instead.
+- **Completion history has no UI yet** — the SQLite `completion_log` table
+  records every check-off with a timestamp, but no dashboard panel surfaces
+  streak charts or heatmaps yet. The data is there; it just needs a frontend.
 - **No auth** — designed for a trusted local network (your home WiFi).
   Don't expose port 8090 (host side) to the public internet without adding
   authentication first.
@@ -115,6 +147,3 @@ network calls — the dashboard becomes optional, not required.
   `pet.cpp` still has these hardcoded. Wire `wifi_sync.cpp`'s settings
   response into `Pet`/`HabitTracker` setters to make them actually
   adjustable from the dashboard.
-- **Storage is a single JSON file** — fine for one device and one
-  household. For history/analytics, swap `store.js` for a real database;
-  it's isolated behind `get`/`update`, so it's a one-file change.

@@ -49,7 +49,7 @@ README.
    │                      │  ◀── habits/goals/settings ─ │                      │
    │  • pet + habits      │                              │  • web control panel  │
    │  • LVGL touch UI     │                              │  • REST API           │
-   │  • local NVS storage │                              │  • JSON file storage  │
+   │  • local NVS storage │                              │  • SQLite storage      │
    └─────────────────────┘                              └──────────────────────┘
          source of truth for                                source of truth for
          streaks & completions                              which habits/goals exist

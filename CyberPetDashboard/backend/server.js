@@ -469,7 +469,7 @@ app.get('/api/export', (req, res) => {
 
 // ---------- Storage info ---------------------------------------------------
 
-const DATA_FILE_PATH = path.join(__dirname, 'data', 'store.json');
+const DATA_FILE_PATH = path.join(__dirname, 'data', 'store.db');
 const DASHBOARD_QUOTA = 5 * 1024 * 1024; // 5 MB soft cap for display purposes
 
 // ESP32 NVS partition — typical CyberPet build uses a 20 KB NVS partition

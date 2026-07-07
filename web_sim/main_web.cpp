@@ -6,6 +6,7 @@
     x     - +25 XP
     m     - toggle dev menu overlay
     space - count a rep (when workout screen is running)
+    p     - simulate IMU pickup during Pomodoro focus (guilt-trip flash)
 */
 
 #include <SDL2/SDL.h>
@@ -274,6 +275,9 @@ static void handle_sdl_events() {
             break;
           case SDLK_SPACE:
             ui.addWorkoutRep();
+            break;
+          case SDLK_p:
+            ui.pomodoroGuiltTrip();
             break;
         }
         break;

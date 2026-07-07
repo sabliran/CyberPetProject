@@ -28,6 +28,9 @@ public:
   void addWorkoutRep();
   bool isWorkoutRunning() const { return workoutRunning; }
 
+  void showPomodoroScreen();
+  void pomodoroGuiltTrip();   // hook for IMU "picked up during focus" guilt-trip
+
 private:
   Pet* pet;
   HabitTracker* tracker;
@@ -75,13 +78,36 @@ private:
   uint32_t   workoutElapsedMs;
   lv_timer_t* workoutClockTimer;
 
+  // pomodoro screen widgets + state
+  lv_obj_t*  pomodoroScreen;
+  lv_obj_t*  pomArc;
+  lv_obj_t*  pomTimeLabel;
+  lv_obj_t*  pomModeLabel;
+  lv_obj_t*  pomBlockLabel;
+  lv_obj_t*  pomStartLabel;
+  lv_timer_t* pomClockTimer;
+
+  enum PomState { POM_IDLE, POM_FOCUS, POM_BREAK } pomState;
+  bool       pomRunning;
+  int        pomBlocks;      // focus blocks completed this session
+  uint32_t   pomStartMs;     // lv_tick_get() when current interval started
+  uint32_t   pomElapsedMs;   // accumulated ms before last pause
+
   void buildPetScreen();
   void buildHabitScreen();
   void buildWorkoutScreen();
+  void buildPomodoroScreen();
+  void refreshPomodoroRing();
   void startBlobAnimations();
   void roamToRandom();
   void applyMoodExpression();
   void showXpPopup(lv_area_t coords, int xpValue);
+
+  static void pomClockCB(lv_timer_t* t);
+  static void pomStartBtnCB(lv_event_t* e);
+  static void pomCancelBtnCB(lv_event_t* e);
+  static void pomGoToCB(lv_event_t* e);
+  static void pomGuiltRevertCB(lv_timer_t* t);
 
   static void exprTimerCB(lv_timer_t* t);
   static void revertExprCB(lv_timer_t* t);
