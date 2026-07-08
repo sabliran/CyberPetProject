@@ -18,7 +18,7 @@ The page masks the canvas to a circle to mimic the 1.43" round AMOLED.
 | LVGL version | v8.3.11 (pinned in CMake) |
 | Flash persistence (NVS) | **Not simulated** — state resets on reload |
 | WiFi/dashboard sync | **Not built** — firmware-only |
-| RTC / real day rollover | **Simulated** — press `d` |
+| NTP / real day rollover | **Simulated** — press `d` (timekeeping.cpp excluded from build) |
 | Pomodoro countdown ring | **Real** — same `ui.cpp`; 30s/10s in sim mode |
 
 Sim-only keyboard shortcuts:
@@ -62,8 +62,8 @@ cmake -B build_native && cmake --build build_native -j
   emscripten/native main loop. No `lv_drivers` dependency.
 - `shim/Arduino.h` — minimal shim (`min`/`max`, stdint/string) so the
   hardware-agnostic firmware files compile off-device. Firmware-only files
-  (`storage.cpp`, `wifi_sync.cpp`, `CyberPet.ino`) are excluded by design —
-  don't try to shim `Preferences`/`WiFi`.
+  (`storage.cpp`, `wifi_sync.cpp`, `timekeeping.cpp`, `CyberPet.ino`) are
+  excluded by design — don't try to shim `Preferences`/`WiFi`/`time()`.
 - `lv_conf.h` — LVGL config (32-bit color for direct SDL texture mapping).
 - `CMakeLists.txt` — fetches LVGL v8.3.11 automatically; builds for wasm
   under `emcmake` and native otherwise.

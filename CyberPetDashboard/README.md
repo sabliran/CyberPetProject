@@ -60,7 +60,9 @@ network calls — the dashboard becomes optional, not required.
 | GET | `/api/settings` | Read current settings |
 | POST | `/api/settings` | Update settings (partial) |
 | GET | `/api/pet` | Last-synced pet state |
-| POST | `/api/sync` | Device sync endpoint: accepts `{deviceId, petState, completedHabits: [names]}`, returns current habits/goals/settings |
+| POST | `/api/sync` | Device sync endpoint: accepts `{deviceId, petState, completedHabits: [{id, name}]}` (also legacy `[names]`), returns current habits/goals/settings |
+| GET | `/api/history` | Completion heatmap for the last N days (default 112, max 365). Query: `?days=N`. Returns `{ heatmap: [{date, count, total, pct}], recent: [...] }` |
+| GET | `/api/history/streaks` | Per-habit current streak, best streak, and last-14-days boolean array. Returns `[{id, name, streak, best, recent: [bool×14]}]` |
 
 ## Storage
 
@@ -82,6 +84,31 @@ automatically migrated and renamed to `store.json.migrated`. The Dockerfile
 uses a multi-stage build so native `better-sqlite3` binaries are compiled
 against Alpine's musl libc inside the builder container, not copied from the
 host.
+
+## Fixed in the v6 revision
+
+- **Dashboard settings weren't consumed by the firmware** — `moodGainPerHabit`,
+  `moodDecayPerMiss`, and `dailyResetHour` existed in the API but `pet.cpp`
+  hardcoded mood gain (2) and decay (15). Fixed by adding a `PetSettings`
+  struct to the hardware-agnostic layer (`pet.h`), consuming all three fields
+  from the `/api/sync` response via `pet.applySettings()` (validates ranges —
+  0-100 for mood fields, 0-23 for hour). Settings are persisted to NVS so a
+  standalone boot after a previous sync keeps the last-configured values.
+  `WifiSync` no longer carries a `dailyResetHour` field; `loop()` reads it
+  from `pet.getSettings().dailyResetHour`.
+
+## Fixed in the v5 revision
+
+- **Renaming a habit on the dashboard wiped its on-device streak** — the
+  device now carries `Habit::serverId` (the dashboard's `habit.id`) and
+  reconciles by id first; the name is updated in place on a match, so renames
+  are transparent to streak/completion state. The sync endpoint now also
+  accepts `completedHabits` as `[{id, name}, ...]` objects (firmware sends
+  the server id alongside the name), which lets the server resolve the current
+  name even for habits renamed since the last sync. Legacy string-name arrays
+  from older firmware still work.
+- `/api/sync` API reference: `completedHabits` updated from `[names]` to
+  `[{id, name}]` (id = dashboard `habit.id`, -1 if unsynced).
 
 ## Fixed in the v4 revision
 
@@ -129,21 +156,20 @@ host.
 
 ## Known gaps / next steps
 
-- **Habit reconciliation is name-based**, not ID-based. Adding/removing
-  habits from the dashboard works fine, but *renaming* one shows up
-  on-device as remove-old + add-new (streak resets). Fix: add a `serverId`
-  field to the on-device `Habit` struct and match on that.
 - **Goals aren't synced to the device yet** — the API and dashboard UI for
   goals are complete, but `wifi_sync.cpp` only pulls/pushes habits and pet
   state right now.
-- **Completion history has no UI yet** — the SQLite `completion_log` table
-  records every check-off with a timestamp, but no dashboard panel surfaces
-  streak charts or heatmaps yet. The data is there; it just needs a frontend.
+- **Completion history** — ✅ DONE. Each `/api/sync` call appends dated
+  records `{habitId, habitName, xpValue, date, deviceId, completedAt}` to the
+  `completion_log` table via `store.appendCompletions()`. Deduped per habit per
+  day, capped at 365 days. The Overview tab surfaces a GitHub-style heatmap
+  (4/12/16-week range buttons) and per-habit current/best streak with a
+  14-day dot display. Endpoints: `GET /api/history?days=N` and
+  `GET /api/history/streaks`.
 - **No auth** — designed for a trusted local network (your home WiFi).
   Don't expose port 8090 (host side) to the public internet without adding
   authentication first.
-- **Settings aren't yet consumed by the firmware** — `moodGainPerHabit`,
-  `moodDecayPerMiss`, `dailyResetHour` etc. exist in the dashboard/API but
-  `pet.cpp` still has these hardcoded. Wire `wifi_sync.cpp`'s settings
-  response into `Pet`/`HabitTracker` setters to make them actually
-  adjustable from the dashboard.
+- **Settings are now fully consumed by the firmware** — `moodGainPerHabit`,
+  `moodDecayPerMiss`, and `dailyResetHour` from `/api/settings` are applied
+  via `pet.applySettings()` on every sync and persisted to NVS so standalone
+  reboots keep the last-configured values.

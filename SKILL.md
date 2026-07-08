@@ -47,13 +47,20 @@ user to their board's example instead.
 
 ## Hard rules (violating these reintroduces fixed bugs)
 
-- **Sync reconciliation is name-based, not ID-based.** The device doesn't know
-  the dashboard's habit IDs; habit *names* are the shared key.
+- **Sync reconciliation is id-first, name-fallback.**
+  1. Match by `Habit::serverId == server habit.id` — rename-safe, streak-safe.
+  2. If no id match (serverId == -1 or first sync): fall back to
+     truncation-aware `strncmp` name compare and *adopt* the server id so future
+     syncs use path (1).
+  Both paths must remain in `wifi_sync.cpp::sync()`. Removing the name-fallback
+  path breaks first sync after a firmware flash (no ids on device yet). Removing
+  the id path reverts the rename-resets-streak bug.
 - **All habit-name comparisons must be truncation-aware:** use
   `strncmp(a, b, HABIT_NAME_LEN - 1)`, never plain `strcmp`. On-device names
   truncate at `HABIT_NAME_LEN-1` (23) chars; a plain `strcmp` against a longer
   dashboard name never matches, causing the habit to be removed and re-added
-  (streak wiped) every sync cycle.
+  (streak wiped) every sync cycle. This rule applies to the name-fallback path
+  above, deletion checks for serverId==-1 habits, and any future name lookup.
 - **After restoring habits from storage, call `HabitTracker::recount()`.**
   `habitCount` is not part of the persisted byte blob; skipping the recount
   makes `count()` return 0 and duplicate default habits get appended on boot.
@@ -80,33 +87,61 @@ user to their board's example instead.
 
 ## Dashboard extension point
 
-`store.js` exposes `get()` and `update(mutatorFn)` over a single JSON file.
-This is the seam: to add persistence features (completion history, analytics)
-or swap to a real database, change `store.js` only — the server routes don't
-touch storage directly. New API routes go in `server.js`; keep the existing
-REST shape (`/api/habits`, `/api/goals`, `/api/settings`, `/api/pet`,
-`/api/sync`).
+`store.js` exposes `get()`, `update(mutatorFn)`, and `appendCompletions(d, names, date, deviceId)`.
+This is the seam: to add persistence features or swap to a different database,
+change `store.js` only — server routes never touch storage directly.
+New API routes go in `server.js`; keep the existing REST shape
+(`/api/habits`, `/api/goals`, `/api/settings`, `/api/pet`, `/api/sync`,
+`/api/history`, `/api/history/streaks`).
+
+`appendCompletions` is called **inside** a `store.update()` callback (not
+standalone) so the pet-state write and log append land in a single SQLite
+transaction. It dedupes per habit per day (truncation-aware `namesMatch`),
+stamps records with the server's local date (device clock may skew around
+midnight), attaches `deviceId`, and prunes entries older than
+`HISTORY_KEEP_DAYS` days. Dashboard-side completions (from
+`/api/habits/:id/complete`) push directly to `d.completionLog` inside their
+own `update()` call — `appendCompletions` is for device sync only.
 
 ## Sync protocol (device ↔ dashboard)
 
 Device POSTs to `/api/sync`:
 ```json
-{ "deviceId": "<mac>", "petState": {...}, "completedHabits": ["<name>", ...] }
+{ "deviceId": "<mac>", "petState": {...},
+  "completedHabits": [{"id": 3, "name": "Move body"}, ...] }
 ```
-Server responds with the current `{ habits, goals, settings }`. The device
-then adds server habits it lacks, updates XP values, and removes habits no
-longer on the server — all matched by truncation-aware name compare.
+`completedHabits` entries are `{id, name}` objects where `id` is the
+dashboard's `habit.id` (stored as `Habit::serverId` on-device). The server
+normalizes both the new object format and the legacy string-name format for
+backward compatibility.
+
+Server responds with `{ habits, goals, settings, dashXpTotal, configVersion }`.
+Each habit object includes its `id`. The device reconciles id-first (rename-
+safe), falls back to truncation-aware name compare for first-sync/legacy slots,
+and adopts the server id on a name-match so future syncs skip the name compare.
 
 ## Known gaps to be aware of (don't "rediscover" them as bugs)
 
-- Daily reset is uptime-based (`millis()`), not wall-clock. The
-  RTC-based fix (onboard PCF85063) is the top roadmap item; `dailyResetHour`
-  already exists in settings waiting to be consumed.
+- Daily reset is **wall-clock-based via NTP** when WiFi is configured; falls
+  back to the original `millis()`/24 h uptime path when standalone.
+  `dailyResetHour` is now consumed from dashboard settings (default: 4 AM).
+  An external I2C RTC (PCF85063/DS3231) can be added later by subclassing
+  `TimeKeeper` and overriding `now()` — **do NOT write RTC driver code yet**,
+  the I2C pads on the 1.43C are unverified.
+- `timekeeping.cpp` is **firmware-only** (excluded from the sim build, same
+  pattern as `storage.cpp`/`wifi_sync.cpp`). The sim 'd' key still calls
+  `pet.dailyTick`/`habits.resetDaily` directly in `main_web.cpp`.
 - Goals exist in the dashboard/API but aren't synced to the device yet.
-- Renaming a habit on the dashboard resets its on-device streak (name-based
-  reconciliation). The proper fix is adding a `serverId` field to `Habit`.
-- Dashboard settings (mood gain/decay, reset hour) aren't consumed by the
-  firmware yet — they're plumbed but `pet.cpp` still hardcodes the values.
+- Renaming a habit on the dashboard now **preserves on-device streaks** —
+  reconciliation is id-first (`Habit::serverId`), with truncation-aware name
+  fallback for first-sync / legacy unsynced habits.
+- Dashboard settings (`moodGainPerHabit`, `moodDecayPerMiss`, `dailyResetHour`)
+  are now fully consumed. The sync response applies them via `pet.applySettings()`
+  (validates ranges: 0-100 for mood fields, 0-23 for hour). `PetSettings` is
+  persisted to NVS under key `"pet_settings"` with a size-guard; a standalone
+  boot after a previous sync keeps the last-configured values. `WifiSync` no
+  longer holds a `dailyResetHour` field — `loop()` reads it from
+  `pet.getSettings().dailyResetHour`.
 
 ## Style
 

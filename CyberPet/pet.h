@@ -1,6 +1,21 @@
 #pragma once
 #include <Arduino.h>
 
+// Tunable behaviour received from the dashboard via sync.
+// Defaults match the values that were previously hardcoded in pet.cpp.
+// Persisted to NVS so a standalone boot after a previous WiFi sync keeps
+// the last-configured values instead of falling back to the compile-time
+// defaults.  applySettings() validates each field before storing.
+struct PetSettings {
+  int moodGainPerHabit;  // mood boost when any habit is done    (daily tick)
+  int moodDecayPerMiss;  // mood loss  when no habit is done     (daily tick)
+  int dailyResetHour;    // local hour at which habits roll over (0-23)
+};
+
+// These match the server's DEFAULT_DATA.settings and pet.cpp's old literals.
+// dailyResetHour also mirrors DEFAULT_DAILY_RESET_HOUR in timekeeping.h (both = 4).
+static const PetSettings DEFAULT_PET_SETTINGS = { 2, 15, 4 };
+
 // Evolution stages — blob visually grows and gains glow as it evolves
 enum PetStage {
   STAGE_EGG = 0,
@@ -66,12 +81,19 @@ public:
   // is credited, so calling this multiple times with the same total is safe.
   void applyDashboardXpTotal(int total);
 
+  // Dashboard settings — applied via applySettings(); persisted to NVS in
+  // CyberPet.ino's change-guarded save block so a standalone boot after a
+  // previous WiFi sync keeps the last-configured values.
+  void applySettings(const PetSettings& s); // validates ranges before storing
+  PetSettings getSettings() const;
+
   // Dev / test helpers (also useful for NVS restore path on firmware)
   void setXP(int totalXP);
   void setMood(int mood);
   void setHunger(int hunger);  // dev only — clamps 0-100, also resets alive if > 0
 
 private:
-  PetState state;
+  PetState    state;
+  PetSettings settings;
   void checkEvolution();
 };

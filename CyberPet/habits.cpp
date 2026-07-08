@@ -17,15 +17,16 @@ void HabitTracker::init() {
   }
 }
 
-int HabitTracker::addHabit(const char* name, int xpValue) {
+int HabitTracker::addHabit(const char* name, int xpValue, int serverId) {
   for (int i = 0; i < MAX_HABITS; i++) {
     if (!habits[i].active) {
       strncpy(habits[i].name, name, HABIT_NAME_LEN - 1);
       habits[i].name[HABIT_NAME_LEN - 1] = '\0';
-      habits[i].xpValue = xpValue;
+      habits[i].xpValue   = xpValue;
       habits[i].doneToday = false;
-      habits[i].streak = 0;
-      habits[i].active = true;
+      habits[i].streak    = 0;
+      habits[i].active    = true;
+      habits[i].serverId  = serverId;
       habitCount++;
       return i;
     }

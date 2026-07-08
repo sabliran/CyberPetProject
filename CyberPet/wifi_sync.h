@@ -21,6 +21,8 @@ public:
   // Call periodically from loop() (respect settings.syncIntervalSeconds,
   // default every 60s - don't hammer the API every loop iteration)
   // Pulls habit/goal/settings changes down, pushes pet state + completions up.
+  // Dashboard settings (moodGainPerHabit, moodDecayPerMiss, dailyResetHour)
+  // are applied via pet->applySettings() and read back via pet->getSettings().
   bool sync(Pet* pet, HabitTracker* tracker);
 
   // Call every ~5 s from loop(). Hits GET /api/config-version (tiny response).
@@ -34,10 +36,10 @@ private:
   bool connected = false;
   int  lastKnownConfigVersion = -1; // -1 forces a sync on the very first check
 
-  // Habit reconciliation is merge-by-name (done inline in sync()).
-  // Known limitation: renaming a habit on the dashboard shows up on-device
-  // as remove-old + add-new (streak resets), since HabitTracker doesn't
-  // track dashboard IDs yet. Extend Habit with a serverId field to fix.
-  // Names longer than HABIT_NAME_LEN-1 chars are truncated consistently on
-  // both compare and store, so long names sync stably (just truncated).
+  // Habit reconciliation (see sync() in wifi_sync.cpp):
+  //   1. Match by Habit::serverId == server habit.id  (rename-safe)
+  //   2. Fallback: truncation-aware strncmp on name   (first sync / legacy)
+  //   On name-fallback match, the server id is adopted so future syncs use (1).
+  // Names longer than HABIT_NAME_LEN-1 chars are truncated on both compare and
+  // store, so long names sync stably (just truncated).
 };

@@ -52,27 +52,6 @@ function namesMatch(a, b) {
       && a.slice(0, DEVICE_NAME_MAX) === b.slice(0, DEVICE_NAME_MAX);
 }
 
-function recordCompletions(d, habitNames, date) {
-  for (const name of habitNames) {
-    const already = d.completionLog.some(e => namesMatch(e.habitName, name) && e.date === date);
-    if (already) continue;
-    const habit = d.habits.find(h => namesMatch(h.name, name) && h.active);
-    d.completionLog.push({
-      id: d.nextLogId++,
-      habitId:   habit?.id   ?? null,
-      habitName: name,
-      xpValue:   habit?.xpValue ?? 0,
-      date,
-      completedAt: new Date().toISOString()
-    });
-  }
-  // Keep only the last 365 days
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - 365);
-  const cutoffStr = cutoff.toISOString().slice(0, 10);
-  d.completionLog = d.completionLog.filter(e => e.date >= cutoffStr);
-}
-
 // ---------- Habits ---------------------------------------------------------
 
 app.get('/api/habits', (req, res) => {
@@ -395,20 +374,36 @@ app.get('/api/pet', (req, res) => {
 // ---------- Device sync ----------------------------------------------------
 
 app.post('/api/sync', (req, res) => {
-  const { deviceId, petState, completedHabits, completedHabitIds } = req.body;
+  const { deviceId, petState, completedHabits } = req.body;
+  // Use the server's local date as the canonical completion date.
+  // Device and server clocks may disagree slightly around midnight — the server
+  // date is always preferred so history records are consistent.
+  const todayDate = new Date().toISOString().slice(0, 10);
   const data = store.update(d => {
     if (deviceId) d.settings.deviceId = deviceId;
     if (petState) {
       d.petState = { ...d.petState, ...petState, lastSyncedAt: new Date().toISOString() };
     }
-    const todayDate = new Date().toISOString().slice(0, 10);
-    if (Array.isArray(completedHabits)) {
-      d.lastCompletedHabits = completedHabits;
-      recordCompletions(d, completedHabits, todayDate);
-    } else if (Array.isArray(completedHabitIds)) {
-      d.lastCompletedHabits = completedHabitIds;
-      const names = completedHabitIds.map(idx => d.habits[idx]?.name).filter(Boolean);
-      recordCompletions(d, names, todayDate);
+    if (Array.isArray(completedHabits) && completedHabits.length > 0) {
+      // Accept legacy string-name arrays (old firmware) or {id, name} object
+      // arrays (new firmware).  When an id is known, use the server's current
+      // habit name so completion log entries stay accurate through renames.
+      const names = completedHabits.map(entry => {
+        if (typeof entry === 'string') return entry;
+        if (typeof entry === 'object' && entry !== null) {
+          const sid = typeof entry.id === 'number' ? entry.id : -1;
+          if (sid >= 0) {
+            const h = d.habits.find(h => h.id === sid && h.active);
+            if (h) return h.name; // use current server name (rename-aware)
+          }
+          return typeof entry.name === 'string' ? entry.name : null;
+        }
+        return null;
+      }).filter(Boolean);
+      d.lastCompletedHabits = names;
+      // History recording lives in store.js — called here inside update() so
+      // the pet-state write and log append are a single atomic DB transaction.
+      store.appendCompletions(d, names, todayDate, deviceId || null);
     }
   });
   res.json({

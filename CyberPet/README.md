@@ -36,6 +36,7 @@ key, no cloud dependency, runs standalone on-device.
 | `storage.h/.cpp` | Save/load pet + habit state to flash (NVS) |
 | `ui.h/.cpp` | LVGL screens (pet view, habit list, workout, Pomodoro) |
 | `wifi_sync.h/.cpp` | Optional sync client for the CyberPetDashboard API |
+| `timekeeping.h/.cpp` | Wall-clock time source (NTP); hardware-agnostic base class |
 | `CyberPet.ino` | Integration skeleton — glues everything together |
 
 ## Setup
@@ -57,6 +58,34 @@ key, no cloud dependency, runs standalone on-device.
    (by Benoit Blanchon) from the Library Manager.
 6. Flash via USB-C from Arduino IDE (BOOT+RESET combo if it won't enter
    download mode automatically).
+
+## Fixed bugs (v5 revision)
+
+- **Dashboard settings weren't consumed by the firmware** — `moodGainPerHabit`,
+  `moodDecayPerMiss`, and `dailyResetHour` existed in the dashboard/API but
+  `pet.cpp` still hardcoded mood gain (2) and decay (15). Fixed by adding a
+  `PetSettings` struct to the hardware-agnostic layer (`pet.h`), with
+  `DEFAULT_PET_SETTINGS = { 2, 15, 4 }` matching the former literals. The sync
+  response now applies all three fields via `pet.applySettings()`, which
+  validates each field before storing (0-100 for mood fields, 0-23 for hour) —
+  a bad payload can't zero out mood mechanics. `PetSettings` is persisted to NVS
+  under key `"pet_settings"` with a size-guard, so a standalone boot after a
+  previous WiFi sync keeps the last-configured values instead of reverting to
+  compile-time defaults. `WifiSync` no longer holds a `dailyResetHour` field —
+  the reset hour is read from `pet.getSettings().dailyResetHour` in `loop()`.
+
+## Fixed bugs (v4 revision)
+
+- **Renaming a habit on the dashboard wiped its on-device streak** — the
+  device matched habits by name; renaming on the dashboard meant the old name
+  was never found, so the habit was removed and re-added (streak reset) on
+  every sync. Fixed by adding `int serverId` to the `Habit` struct and
+  switching reconciliation to id-first: the device matches `Habit::serverId`
+  against the server's `habit.id` and updates the name in place. The name
+  path stays as a fallback for the first sync (no ids on device yet) and
+  adopts the server id on match so subsequent syncs use the id path.
+  NVS habits key bumped to `habits_v2`; old saves are discarded cleanly
+  (hardware not yet flashed — acceptable reset).
 
 ## Fixed bugs (v3 revision)
 
@@ -97,12 +126,18 @@ files, re-download:
 
 ## Known gaps / next steps
 
-- **Daily reset uses uptime, not wall-clock time.** Right now a "day" is
-  literally 24 hours of `millis()`, which drifts and resets at the wrong
-  time if the device reboots. For a real midnight reset, read the onboard
-  **PCF85063 RTC** each loop and compare `day-of-year` against
-  `storage.loadLastResetDay()`. Get the RTC library from Waveshare's
-  example repo (`01_Arduino_Libraries` folder).
+- **Daily reset now uses wall-clock time via NTP** when WiFi is configured.
+  Set your POSIX `TIMEZONE` string in `CyberPet.ino` (e.g.
+  `"EST5EDT,M3.2.0,M11.1.0"`) and the reset fires at `dailyResetHour` local
+  time (synced from dashboard settings, default 4 AM).  Without WiFi the
+  original 24 h `millis()` uptime path is used unchanged.
+  The last-reset date is persisted to NVS so a reboot after midnight doesn't
+  double-fire or skip the reset.
+- **I2C RTC (PCF85063/DS3231) not yet wired in.**  `timekeeping.h` defines a
+  virtual `TimeKeeper` base; adding an RTC backend is a `now()` override with
+  no changes to pet/habits logic.  **Do NOT start RTC driver work until the
+  I2C pads on the 1.43C are verified** — they were unconfirmed at time of
+  writing; check Waveshare's schematic/example before soldering.
 - **LVGL version:** written against **LVGL v8.2+** —
   `lv_obj_set_user_data`/`lv_obj_get_user_data` (used in `ui.cpp`) don't
   exist before 8.2 (assign `obj->user_data` directly on 8.0/8.1). LVGL v9
@@ -111,9 +146,6 @@ files, re-download:
   compiling.
 - **ArduinoJson version:** `wifi_sync.cpp` uses v6 syntax
   (`StaticJsonDocument`). On v7, rename to `JsonDocument` — two lines.
-- **Renaming a habit on the dashboard** shows up on-device as remove+add
-  (streak resets), since reconciliation is name-based. Fix: add a
-  `serverId` field to the `Habit` struct and match on that.
 - **Editing habits from the device itself** isn't wired up — only via the
   dashboard (or edit the defaults in `habits.cpp`).
 - **Mood doesn't currently punish evolution** — pet only grows, never
@@ -128,11 +160,11 @@ for *new stuff*.
 
 ### Quick wins (an evening each)
 
-- **RTC-based midnight reset** — the single most impactful improvement.
-  Use the onboard PCF85063 (library in Waveshare's `01_Arduino_Libraries`)
-  so habits reset at your configured hour instead of "24h of uptime".
-  The `dailyResetHour` setting already exists in the dashboard waiting
-  to be consumed.
+- **I2C RTC backend** — NTP covers the common WiFi case; for a fully offline
+  wall-clock reset, wire in the onboard PCF85063 (library in Waveshare's
+  `01_Arduino_Libraries`) as a `TimeKeeper` subclass.  Verify the I2C pads
+  on the 1.43C schematic before soldering — they were unconfirmed when
+  `timekeeping.h` was written.
 - **Pet idle animations** — LVGL animations on the blob (slow bounce,
   occasional blink via a shrinking ellipse overlay, mood-based wobble
   speed). Pure `lv_anim_t` work, no new hardware.
@@ -141,9 +173,9 @@ for *new stuff*.
 - **Completion celebration** — brief particle/confetti effect (a few
   animated circles) when checking off a habit. Cheap dopamine, and it's
   what makes tamagotchi-style devices feel alive.
-- **Consume dashboard settings** — wire the settings from the sync
-  response into `Pet`/`HabitTracker` (mood gain/decay values, reset hour)
-  so the dashboard settings panel actually controls the device.
+- **Consume dashboard settings** — ✅ DONE (v5). `moodGainPerHabit`,
+  `moodDecayPerMiss`, and `dailyResetHour` are now applied from the sync
+  response and persisted to NVS.
 
 ### Medium projects
 

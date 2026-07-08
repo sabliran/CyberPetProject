@@ -30,14 +30,16 @@ PetState Storage::loadPet() {
 }
 
 void Storage::saveHabits(HabitTracker &tracker) {
-  prefs.putBytes("habits", tracker.habits, sizeof(tracker.habits));
+  // Key "habits_v2": bumped from "habits" when Habit gained the serverId field.
+  // Old saves (sizeof mismatch) are silently discarded by loadHabits.
+  prefs.putBytes("habits_v2", tracker.habits, sizeof(tracker.habits));
   prefs.putInt("habit_count", tracker.count());
 }
 
 void Storage::loadHabits(HabitTracker &tracker) {
-  size_t len = prefs.getBytesLength("habits");
+  size_t len = prefs.getBytesLength("habits_v2");
   if (len == sizeof(tracker.habits)) {
-    prefs.getBytes("habits", tracker.habits, sizeof(tracker.habits));
+    prefs.getBytes("habits_v2", tracker.habits, sizeof(tracker.habits));
   }
   // habitCount is NOT stored in the byte blob - recount from active flags,
   // otherwise count() returns 0 after a reboot and init() would append
@@ -51,4 +53,25 @@ void Storage::saveLastResetDay(int dayOfYear) {
 
 int Storage::loadLastResetDay() {
   return prefs.getInt("last_reset_day", -1);
+}
+
+void Storage::saveLastResetYear(int year) {
+  prefs.putInt("last_reset_yr", year);
+}
+
+int Storage::loadLastResetYear() {
+  return prefs.getInt("last_reset_yr", -1);
+}
+
+void Storage::saveSettings(const PetSettings& s) {
+  prefs.putBytes("pet_settings", &s, sizeof(PetSettings));
+}
+
+PetSettings Storage::loadSettings() {
+  PetSettings s = DEFAULT_PET_SETTINGS;
+  size_t len = prefs.getBytesLength("pet_settings");
+  if (len == sizeof(PetSettings)) {
+    prefs.getBytes("pet_settings", &s, sizeof(PetSettings));
+  }
+  return s;
 }

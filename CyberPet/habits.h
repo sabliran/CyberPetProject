@@ -9,7 +9,8 @@ struct Habit {
   int xpValue;
   bool doneToday;
   int streak;
-  bool active; // false = empty slot
+  bool active;    // false = empty slot
+  int serverId;   // dashboard habit.id; -1 = no server id yet (local / unsynced)
 };
 
 class HabitTracker {
@@ -18,8 +19,9 @@ public:
 
   void init();
 
-  // Returns habit index, or -1 if list full
-  int addHabit(const char* name, int xpValue);
+  // Returns habit index, or -1 if list full.
+  // serverId: pass the dashboard habit.id when known; -1 for local/seeded habits.
+  int addHabit(const char* name, int xpValue, int serverId = -1);
   void removeHabit(int index);
 
   bool completeHabit(int index);   // returns false if already done today

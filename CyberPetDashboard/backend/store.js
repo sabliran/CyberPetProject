@@ -2,6 +2,19 @@
 
 const fs   = require('fs');
 const path = require('path');
+
+// ── Shared constants / helpers ────────────────────────────────────────────────
+
+const DEVICE_NAME_MAX  = 23;   // firmware truncates habit names at this length
+const HISTORY_KEEP_DAYS = 365; // rolling window; oldest entries pruned on each write
+
+// Truncation-aware name comparison — mirrors firmware's strncmp(a, b, HABIT_NAME_LEN-1).
+// A plain === misses when one side was truncated to 23 chars on-device.
+function namesMatch(a, b) {
+  if (a === b) return true;
+  return (a.length >= DEVICE_NAME_MAX || b.length >= DEVICE_NAME_MAX)
+      && a.slice(0, DEVICE_NAME_MAX) === b.slice(0, DEVICE_NAME_MAX);
+}
 const Database = require('better-sqlite3');
 
 const DATA_DIR  = path.join(__dirname, 'data');
@@ -144,7 +157,8 @@ function getDb() {
       habit_name   TEXT    NOT NULL,
       xp_value     INTEGER NOT NULL DEFAULT 0,
       date         TEXT    NOT NULL,
-      completed_at TEXT    NOT NULL
+      completed_at TEXT    NOT NULL,
+      device_id    TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_log_date ON completion_log(date);
     CREATE TABLE IF NOT EXISTS kv (
@@ -152,6 +166,9 @@ function getDb() {
       value TEXT NOT NULL
     );
   `);
+  // Migration: add device_id column to DBs created before this field existed.
+  // SQLite throws on duplicate column names so we swallow that error.
+  try { _db.exec('ALTER TABLE completion_log ADD COLUMN device_id TEXT'); } catch (_) {}
   return _db;
 }
 
@@ -177,10 +194,11 @@ function readFromDb(db) {
     .map(r => ({ id: r.id, text: r.text, done: !!r.done, category: r.category }));
 
   const completionLog = db.prepare(
-    'SELECT id, habit_id, habit_name, xp_value, date, completed_at FROM completion_log'
+    'SELECT id, habit_id, habit_name, xp_value, date, completed_at, device_id FROM completion_log'
   ).all().map(r => ({
     id: r.id, habitId: r.habit_id, habitName: r.habit_name,
-    xpValue: r.xp_value, date: r.date, completedAt: r.completed_at
+    xpValue: r.xp_value, date: r.date, completedAt: r.completed_at,
+    deviceId: r.device_id
   }));
 
   return {
@@ -227,10 +245,10 @@ function writeToDb(db, data) {
 
     db.prepare('DELETE FROM completion_log').run();
     const il = db.prepare(
-      'INSERT INTO completion_log (id, habit_id, habit_name, xp_value, date, completed_at) VALUES (?,?,?,?,?,?)'
+      'INSERT INTO completion_log (id, habit_id, habit_name, xp_value, date, completed_at, device_id) VALUES (?,?,?,?,?,?,?)'
     );
     for (const e of data.completionLog)
-      il.run(e.id, e.habitId ?? null, e.habitName, e.xpValue, e.date, e.completedAt);
+      il.run(e.id, e.habitId ?? null, e.habitName, e.xpValue, e.date, e.completedAt, e.deviceId ?? null);
 
     const uk = db.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?,?)');
     for (const k of KV_KEYS) {
@@ -312,6 +330,43 @@ function seedOrMerge(db) {
   }
 }
 
+// ── History recording ─────────────────────────────────────────────────────────
+
+// Call this inside a store.update() callback to append completion records.
+// Keeps the mutation atomic with whatever else the update does (e.g. petState).
+//
+// date      : server's local "YYYY-MM-DD" string — use new Date().toISOString().slice(0,10).
+//             The device clock and server clock may disagree slightly around midnight
+//             (device uses NTP when available; server always uses its own clock).
+//             The server date is canonical.
+// deviceId  : MAC/ID string from the syncing device, or null for dashboard-side completions.
+//
+// Dedupes per habit per day (truncation-aware name match).
+// Prunes the log to the most recent HISTORY_KEEP_DAYS days on each call.
+function appendCompletions(d, names, date, deviceId) {
+  for (const name of names) {
+    const already = d.completionLog.some(
+      e => namesMatch(e.habitName, name) && e.date === date
+    );
+    if (already) continue;
+    const habit = d.habits.find(h => namesMatch(h.name, name) && h.active);
+    d.completionLog.push({
+      id:          d.nextLogId++,
+      habitId:     habit?.id      ?? null,
+      habitName:   name,
+      xpValue:     habit?.xpValue ?? 0,
+      date,
+      completedAt: new Date().toISOString(),
+      deviceId:    deviceId || null
+    });
+  }
+  // Roll: drop entries older than HISTORY_KEEP_DAYS days
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - HISTORY_KEEP_DAYS);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  d.completionLog = d.completionLog.filter(e => e.date >= cutoffStr);
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 function load() {
@@ -330,4 +385,4 @@ function save() {
 function get()             { return load(); }
 function update(mutatorFn) { const d = load(); mutatorFn(d); save(); return d; }
 
-module.exports = { get, update };
+module.exports = { get, update, appendCompletions };

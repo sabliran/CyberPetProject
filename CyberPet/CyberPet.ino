@@ -3,8 +3,9 @@
 
   INTEGRATION NOTE:
   This sketch assumes you've dropped pet.h/.cpp, habits.h/.cpp, storage.h/.cpp,
-  and ui.h/.cpp into Waveshare's own example project for this board (from
-  github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.43C, folder 02_Example).
+  ui.h/.cpp, wifi_sync.h/.cpp, and timekeeping.h/.cpp into Waveshare's own
+  example project for this board (github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.43C,
+  folder 02_Example).
 
   That example already contains the correct display/touch/QSPI init code for
   this exact board - copy the display + touch init calls from their
@@ -18,11 +19,20 @@
 #include "storage.h"
 #include "ui.h"
 #include "wifi_sync.h"
+#include "timekeeping.h"
 
 // --- Fill these in, or leave WIFI_SSID empty to run fully standalone ---
-const char* WIFI_SSID = "";           // e.g. "MyNetwork"
-const char* WIFI_PASSWORD = "";       // e.g. "MyPassword"
-const char* DASHBOARD_URL = "http://192.168.1.50:8090"; // your docker host's LAN IP, not localhost
+const char* WIFI_SSID     = "";           // e.g. "MyNetwork"
+const char* WIFI_PASSWORD = "";           // e.g. "MyPassword"
+const char* DASHBOARD_URL = "http://192.168.1.50:8090"; // docker host's LAN IP
+
+// POSIX TZ string for your timezone.  Needed so dailyResetHour fires in local
+// time after NTP sync.  Leave "UTC0" if you want resets at UTC midnight.
+// Examples:
+//   "EST5EDT,M3.2.0,M11.1.0"         US Eastern
+//   "CET-1CEST,M3.5.0,M10.5.0/3"    Central Europe
+//   "AEST-10AEDT,M10.1.0,M4.1.0/3"  Australia/Sydney
+const char* TIMEZONE = "UTC0";
 
 // --- TODO: include Waveshare's display/touch driver headers here ---
 // e.g. #include "lv_port_disp.h" / their CO5300 + touch driver includes,
@@ -33,15 +43,26 @@ HabitTracker habits;
 Storage storage;
 PetUI ui;
 WifiSync wifiSync;
+TimeKeeper timeKeeper;
 
-uint32_t lastDailyCheck = 0;
-const uint32_t DAY_MS = 24UL * 60UL * 60UL * 1000UL;
+// Wall-clock daily-reset state (NTP path).
+// Loaded from NVS in setup(); -1 means "never reset" (first boot).
+static int  lastResetYear = -1;
+static int  lastResetDOY  = -1;
+
+// Whether configTime() has been called and we can try the NTP path.
+// False when WIFI_SSID is blank or WiFi connection failed.
+static bool ntpEnabled = false;
+
+// Uptime fallback (standalone / NTP not yet synced).
+static uint32_t lastDailyCheck = 0;
+static const uint32_t DAY_MS = 24UL * 60UL * 60UL * 1000UL;
 
 uint32_t lastSyncAttempt   = 0;
-const uint32_t SYNC_INTERVAL_MS = 60UL * 1000UL; // full sync fallback interval
+const uint32_t SYNC_INTERVAL_MS = 60UL * 1000UL;
 
 uint32_t lastConfigCheck   = 0;
-const uint32_t CONFIG_CHECK_MS = 5UL * 1000UL;   // poll config-version every 5 s
+const uint32_t CONFIG_CHECK_MS = 5UL * 1000UL;
 
 void setup() {
   Serial.begin(115200);
@@ -54,9 +75,13 @@ void setup() {
 
   storage.begin();
 
-  // Load saved pet + habit state from flash (survives power loss/reboot)
   PetState savedPet = storage.loadPet();
   pet.init(savedPet);
+
+  // Restore last-configured dashboard settings (mood gain/decay, reset hour).
+  // Falls back to DEFAULT_PET_SETTINGS if no NVS entry exists yet.
+  PetSettings savedSettings = storage.loadSettings();
+  pet.applySettings(savedSettings);
 
   storage.loadHabits(habits);
   if (habits.count() == 0) {
@@ -65,14 +90,40 @@ void setup() {
 
   ui.init(&pet, &habits);
 
-  // Optional: connect to the dashboard for hybrid sync. Leave WIFI_SSID
-  // empty above to skip this entirely and run fully standalone.
+  // Optional: connect to the dashboard and start NTP.
+  // Leave WIFI_SSID empty above to skip entirely and run fully standalone.
   if (strlen(WIFI_SSID) > 0) {
     wifiSync.begin(WIFI_SSID, WIFI_PASSWORD, DASHBOARD_URL);
+    if (wifiSync.isConnected()) {
+      // Kick off SNTP — time() will return a valid timestamp once the first
+      // NTP response arrives (usually within a few seconds).
+      // ⚠  configTime / setenv / tzset are ESP32 Arduino APIs; cannot be
+      //    compile-tested without the ESP32 toolchain.
+      configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+      setenv("TZ", TIMEZONE, 1);
+      tzset();
+      ntpEnabled = true;
+    }
   }
 
-  lastDailyCheck = millis();
+  // Load last-reset date from NVS (wall-clock path uses this to avoid
+  // double-resets after a reboot that happens after midnight).
+  lastResetYear = storage.loadLastResetYear();
+  lastResetDOY  = storage.loadLastResetDay();
+
+  lastDailyCheck  = millis();
   lastSyncAttempt = millis();
+}
+
+// Fire the daily reset: advance the pet, reset habits, persist, refresh UI.
+// Shared by both the NTP and uptime paths.
+static void fireDailyReset() {
+  bool didAnything = habits.anyDoneToday();
+  pet.dailyTick(didAnything);
+  habits.resetDaily();
+  storage.savePet(pet.getState());
+  storage.saveHabits(habits);
+  ui.refreshPetScreen();
 }
 
 void loop() {
@@ -80,29 +131,56 @@ void loop() {
   // Typically: lv_timer_handler(); plus a millis()-based lv_tick_inc() call,
   // exactly as shown in their example's loop().
 
-  // Simple day-rollover check (uses uptime, not wall-clock time).
-  // For accurate midnight resets, wire this to the onboard PCF85063 RTC
-  // instead - read its date once per loop and compare day-of-year to
-  // storage.loadLastResetDay(). Left as uptime-based for a working MVP.
-  if (millis() - lastDailyCheck >= DAY_MS) {
-    lastDailyCheck = millis();
+  // ── Daily reset ──────────────────────────────────────────────────────────
+  // resetHour is the local hour at which habits roll over.  After the first
+  // successful sync it comes from dashboard settings; before that it's the
+  // compile-time default (4 AM).
+  int resetHour = pet.getSettings().dailyResetHour;
 
-    bool didAnything = habits.anyDoneToday();
-    pet.dailyTick(didAnything);
-    habits.resetDaily();
+  if (ntpEnabled && timeKeeper.hasSync()) {
+    // Wall-clock path: fires once per calendar day at resetHour local time.
+    // Reboot-safe: lastResetDOY is persisted in NVS, so a reboot just after
+    // midnight won't double-fire, and a reboot before resetHour won't skip.
 
-    storage.savePet(pet.getState());
-    storage.saveHabits(habits);
-
-    ui.refreshPetScreen();
+    if (lastResetDOY == -1) {
+      // First NTP sync ever: record today as the baseline without firing a
+      // reset (the pet hasn't had a full day yet).
+      WallDate today = timeKeeper.now();
+      if (today.valid) {
+        lastResetYear = today.year;
+        lastResetDOY  = today.dayOfYear;
+        storage.saveLastResetYear(lastResetYear); // change-guarded by -1 → real value
+        storage.saveLastResetDay(lastResetDOY);
+      }
+    } else if (timeKeeper.shouldReset(lastResetYear, lastResetDOY, resetHour)) {
+      WallDate today = timeKeeper.now();
+      fireDailyReset();
+      // Persist new date (change-guarded: only write if the value actually moved)
+      if (today.year != lastResetYear) {
+        storage.saveLastResetYear(today.year);
+        lastResetYear = today.year;
+      }
+      if (today.dayOfYear != lastResetDOY) {
+        storage.saveLastResetDay(today.dayOfYear);
+        lastResetDOY = today.dayOfYear;
+      }
+    }
+  } else {
+    // Uptime fallback: 24 h of millis() = one day.
+    // Used when WIFI_SSID is blank or NTP hasn't synced yet.
+    // Matches the original behaviour exactly so standalone mode is unchanged.
+    if (millis() - lastDailyCheck >= DAY_MS) {
+      lastDailyCheck = millis();
+      fireDailyReset();
+    }
   }
 
-  // Persist state, but only when it actually changed - NVS flash is
-  // wear-leveled but there's no reason to rewrite identical bytes every
-  // few seconds for the lifetime of the device.
+  // ── Change-guarded NVS save ───────────────────────────────────────────────
+  // Only writes to flash when state actually changed. No wear from idle loops.
   static uint32_t lastSaveCheck = 0;
-  static PetState lastSavedPet = {};
-  static Habit lastSavedHabits[MAX_HABITS] = {};
+  static PetState    lastSavedPet      = {};
+  static Habit       lastSavedHabits[MAX_HABITS] = {};
+  static PetSettings lastSavedSettings = DEFAULT_PET_SETTINGS;
   if (millis() - lastSaveCheck > 5000) {
     lastSaveCheck = millis();
 
@@ -115,22 +193,27 @@ void loop() {
       storage.saveHabits(habits);
       memcpy(lastSavedHabits, habits.habits, sizeof(lastSavedHabits));
     }
+    PetSettings curSettings = pet.getSettings();
+    if (memcmp(&curSettings, &lastSavedSettings, sizeof(PetSettings)) != 0) {
+      storage.saveSettings(curSettings);
+      lastSavedSettings = curSettings;
+    }
   }
 
+  // ── WiFi sync ─────────────────────────────────────────────────────────────
   if (strlen(WIFI_SSID) > 0) {
     // Fast config-version poll (every 5 s) — triggers an immediate full sync
     // only when the dashboard config version has advanced (settings/habits changed).
-    // This is the push-style pickup; the periodic sync below is the fallback.
     if (millis() - lastConfigCheck > CONFIG_CHECK_MS) {
       lastConfigCheck = millis();
       if (wifiSync.checkConfig(&pet, &habits)) {
         ui.refreshHabitScreen();
         storage.saveHabits(habits);
-        lastSyncAttempt = millis(); // reset fallback timer so we don't double-sync
+        lastSyncAttempt = millis();
       }
     }
 
-    // Full sync fallback — catches pet-state push even when config didn't change
+    // Full sync fallback — catches pet-state push even when config didn't change.
     if (millis() - lastSyncAttempt > SYNC_INTERVAL_MS) {
       lastSyncAttempt = millis();
       if (wifiSync.sync(&pet, &habits)) {

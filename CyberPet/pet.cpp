@@ -23,6 +23,7 @@ Pet::Pet() {
   state.fedToday     = false;
   state.alive        = true;
   state.dashXpApplied = 0;
+  settings = DEFAULT_PET_SETTINGS;
 }
 
 void Pet::init(const PetState& loaded) {
@@ -64,9 +65,9 @@ void Pet::dailyTick(bool anyHabitDoneToday) {
 
   // Habit mood adjustment
   if (!anyHabitDoneToday) {
-    state.mood = max(0, state.mood - 15);
+    state.mood = max(0, state.mood - settings.moodDecayPerMiss);
   } else {
-    state.mood = min(100, state.mood + 2);
+    state.mood = min(100, state.mood + settings.moodGainPerHabit);
   }
 
   // Hunger penalises mood: low hunger = big mood decay
@@ -124,6 +125,19 @@ void Pet::setHunger(int hunger) {
   state.hunger = max(0, min(100, hunger));
   if (state.hunger > 0) state.alive = true;
 }
+
+void Pet::applySettings(const PetSettings& s) {
+  // Validate each field independently — a bad payload must not zero out mood
+  // mechanics (mirrors the server's /api/settings whitelist philosophy).
+  if (s.moodGainPerHabit >= 0 && s.moodGainPerHabit <= 100)
+    settings.moodGainPerHabit = s.moodGainPerHabit;
+  if (s.moodDecayPerMiss >= 0 && s.moodDecayPerMiss <= 100)
+    settings.moodDecayPerMiss = s.moodDecayPerMiss;
+  if (s.dailyResetHour >= 0 && s.dailyResetHour <= 23)
+    settings.dailyResetHour = s.dailyResetHour;
+}
+
+PetSettings Pet::getSettings() const { return settings; }
 
 void Pet::applyDashboardXpTotal(int total) {
   if (total > state.dashXpApplied) {

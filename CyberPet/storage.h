@@ -15,7 +15,13 @@ public:
   void loadHabits(HabitTracker &tracker);
 
   void saveLastResetDay(int dayOfYear);
-  int loadLastResetDay();
+  int  loadLastResetDay();
+
+  void saveLastResetYear(int year);
+  int  loadLastResetYear();
+
+  void saveSettings(const PetSettings& s);
+  PetSettings loadSettings();
 
 private:
   Preferences prefs;
