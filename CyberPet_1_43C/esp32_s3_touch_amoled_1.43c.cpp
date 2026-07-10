@@ -306,11 +306,16 @@ bsp_lvgl_t bsp_broolesia_display_init(void) {
   lv_init();
   lv_color_t *buffer1 = NULL;
   lv_color_t *buffer2 = NULL;
-  buffer1 = (lv_color_t *)heap_caps_malloc(LCD_WIDTH * 100 * sizeof(lv_color_t), MALLOC_CAP_DMA);
-  buffer2 = (lv_color_t *)heap_caps_malloc(LCD_WIDTH * 100 * sizeof(lv_color_t), MALLOC_CAP_DMA);
+  // 40 lines per buffer, not Waveshare's 100: two 100-line buffers cost
+  // 186 KB of internal DMA RAM, which starved the heap to ~4 KB once the
+  // WiFi stack loaded (allocation failures = failed syncs + idle freezes).
+  // 40 lines double-buffered = 74 KB total; the QSPI flush just runs in
+  // 12 chunks per full frame instead of 5.
+  buffer1 = (lv_color_t *)heap_caps_malloc(LCD_WIDTH * 40 * sizeof(lv_color_t), MALLOC_CAP_DMA);
+  buffer2 = (lv_color_t *)heap_caps_malloc(LCD_WIDTH * 40 * sizeof(lv_color_t), MALLOC_CAP_DMA);
   assert(buffer1);
   assert(buffer2);
-  lv_disp_draw_buf_init(&disp_buf, buffer1, buffer2, LCD_WIDTH * 100);
+  lv_disp_draw_buf_init(&disp_buf, buffer1, buffer2, LCD_WIDTH * 40);
   lv_disp_drv_init(&disp_drv);
   disp_drv.hor_res = LCD_WIDTH;
   disp_drv.ver_res = LCD_HEIGHT;
