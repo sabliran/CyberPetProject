@@ -23,6 +23,10 @@
 #include "XPowersLib.h"
 #include <esp_timer.h>
 #include <esp_sleep.h>
+#include "ESP_I2S.h"
+#include "esp_check.h"
+#include "es8311.h"   // codec driver bundled from Waveshare's example 08
+#include <math.h>
 
 #include "pet.h"
 #include "habits.h"
@@ -52,6 +56,56 @@ static XPowersAXP2101  power;
 static bool pmuOk = false;
 
 static volatile bool touchPressed = false;  // set by TP_INT falling-edge ISR
+
+// ── Audio: ES8311 codec + NS4150 amp, short chirps on habit events ─────────
+static I2SClass i2s;
+static bool audioOk = false;
+static const int AUDIO_RATE = 16000;
+
+static esp_err_t codecInit() {
+  es8311_handle_t es = es8311_create(0, ES8311_ADDRRES_0);
+  if (!es) return ESP_FAIL;
+  const es8311_clock_config_t clk = {
+    .mclk_inverted = false,
+    .sclk_inverted = false,
+    .mclk_from_mclk_pin = true,
+    .mclk_frequency = AUDIO_RATE * 256,
+    .sample_frequency = AUDIO_RATE,
+  };
+  ESP_RETURN_ON_ERROR(es8311_init(es, &clk, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16), "ES8311", "init");
+  ESP_RETURN_ON_ERROR(es8311_sample_frequency_config(es, clk.mclk_frequency, clk.sample_frequency), "ES8311", "freq");
+  ESP_RETURN_ON_ERROR(es8311_voice_volume_set(es, 75, NULL), "ES8311", "volume");
+  return ESP_OK;
+}
+
+// One decaying sine burst, generated on the fly and written synchronously.
+// Longest chirp is ~150 ms — an acceptable pause in the loop()-driven LVGL.
+static void playTone(float freqHz, int ms, float vol) {
+  static int16_t buf[2 * 2400];  // stereo frames, 150 ms @ 16 kHz max
+  int frames = AUDIO_RATE * ms / 1000;
+  if (frames > 2400) frames = 2400;
+  for (int i = 0; i < frames; i++) {
+    float env = 1.0f - (float)i / frames;  // linear decay, no click at the end
+    int16_t s = (int16_t)(sinf(2.0f * (float)M_PI * freqHz * i / AUDIO_RATE) * 32767.0f * vol * env);
+    buf[2 * i]     = s;
+    buf[2 * i + 1] = s;
+  }
+  i2s.write((uint8_t*)buf, (size_t)frames * 2 * sizeof(int16_t));
+}
+
+// Registered with the UI layer (see PetSoundEvent in ui.h).
+static void petSoundCB(int event) {
+  if (!audioOk) return;
+  switch (event) {
+    case SOUND_HABIT_DONE:    // cheerful up-chirp (A5 -> E6)
+      playTone(880.0f, 70, 0.5f);
+      playTone(1318.5f, 120, 0.5f);
+      break;
+    case SOUND_HABIT_UNDONE:  // single low blip
+      playTone(523.3f, 90, 0.35f);
+      break;
+  }
+}
 
 Pet pet;
 HabitTracker habits;
@@ -169,6 +223,19 @@ void setup() {
   // BOOT button (GPIO0) doubles as a soft power-off — see loop().
   pinMode(0, INPUT_PULLUP);
 
+  // Speaker path: amp enable, I2S out, then codec (needs MCLK running first —
+  // same order as Waveshare's example 08). Non-fatal: no audio = silent pet.
+  pinMode(PA, OUTPUT);
+  digitalWrite(PA, HIGH);
+  i2s.setPins(BCLKPIN, WSPIN, DIPIN, DOPIN, MCLKPIN);
+  if (i2s.begin(I2S_MODE_STD, AUDIO_RATE, I2S_DATA_BIT_WIDTH_16BIT,
+                I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH) &&
+      codecInit() == ESP_OK) {
+    audioOk = true;
+  } else {
+    Serial.println("audio init failed - habit sounds disabled");
+  }
+
   gfx->begin();
   gfx->setBrightness(200);
 
@@ -219,6 +286,7 @@ void setup() {
   }
 
   ui.init(&pet, &habits);
+  ui.setSoundCallback(petSoundCB);
   // Restore the last-synced quest/goal lists from NVS so they don't
   // vanish on reboot while waiting for the next sync.
   {

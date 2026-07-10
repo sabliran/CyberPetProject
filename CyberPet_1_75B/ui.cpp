@@ -1087,6 +1087,7 @@ void PetUI::habitButtonEventCB(lv_event_t* e) {
       self->pet->removeXP(awarded);
       self->refreshHabitScreen();
       self->showXpPopup(coords, -awarded);
+      if (self->soundCB) self->soundCB(SOUND_HABIT_UNDONE);
     }
   } else if (self->tracker->completeHabit(index)) {
     int stageBefore = self->pet->getStage();
@@ -1104,6 +1105,7 @@ void PetUI::habitButtonEventCB(lv_event_t* e) {
     self->showXpPopup(coords, awarded);
     if (evolved)         self->showEvolutionBurst();
     else if (leveledUp)  self->showLevelUpPill(self->pet->getLevel());
+    if (self->soundCB) self->soundCB(SOUND_HABIT_DONE);
   }
 }
 

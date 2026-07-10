@@ -35,6 +35,15 @@ struct GoalInfo {
   char period[GOAL_PERIOD_LEN];  // "daily" / "weekly" / ... (free-form from dashboard)
 };
 
+// Sound events. The UI layer only *emits* these; the board sketch registers a
+// player via setSoundCallback() (speaker/codec wiring is board-specific).
+// Unset callback = silent, so the sim and speakerless boards need nothing.
+enum PetSoundEvent {
+  SOUND_HABIT_DONE = 0,
+  SOUND_HABIT_UNDONE,
+};
+typedef void (*PetSoundCB)(int event);
+
 class PetUI {
 public:
   // Call once after lvgl + display + touch are already initialized
@@ -77,9 +86,13 @@ public:
   void syncStarted();            // shows spinner overlay (no-op if already shown)
   void syncFinished(bool ok);    // green "synced" / red "offline", then fades out
 
+  // Register after init(). See PetSoundEvent above.
+  void setSoundCallback(PetSoundCB cb) { soundCB = cb; }
+
 private:
   Pet* pet;
   HabitTracker* tracker;
+  PetSoundCB soundCB = nullptr;  // deliberately NOT reset in init()
 
   lv_obj_t* petScreen;
   lv_obj_t* habitScreen;
