@@ -30,8 +30,8 @@ function broadcastConfigChange(version, updatedAt) {
 // Replicate firmware level/stage formula so the dashboard can update stage
 // instantly when quest XP is awarded (without waiting for a device sync).
 function stageFromXP(xp) {
-  const STAGE_LEVEL_THRESHOLDS = [0, 2, 5, 8];
-  function xpForLevel(l) { return 500 * l * (l + 1) / 2; }
+  const STAGE_LEVEL_THRESHOLDS = [0, 2, 6, 12];
+  function xpForLevel(l) { return 25 * l * l + 75 * l; }
   let lv = 0;
   while (xpForLevel(lv + 1) <= xp) lv++;
   for (let s = STAGE_LEVEL_THRESHOLDS.length - 1; s >= 0; s--) {
@@ -128,8 +128,26 @@ app.patch('/api/habits/:id', (req, res) => {
 
 // ---------- Goals ----------------------------------------------------------
 
+// Goals are periodic: a done goal becomes available again once its period
+// elapses (measured from doneAt). Call inside a store.update() before
+// reading/serving goals so expiry is applied lazily.
+const GOAL_PERIOD_MS = { weekly: 7 * 864e5, monthly: 30 * 864e5 };
+function resetExpiredGoals(d) {
+  const now = Date.now();
+  for (const g of d.goals) {
+    if (g.done && g.doneAt) {
+      const ms = GOAL_PERIOD_MS[g.period] || GOAL_PERIOD_MS.weekly;
+      if (now - new Date(g.doneAt).getTime() >= ms) {
+        g.done = false;
+        g.doneAt = null;
+      }
+    }
+  }
+}
+
 app.get('/api/goals', (req, res) => {
-  res.json(store.get().goals.filter(g => g.active));
+  const data = store.update(d => resetExpiredGoals(d));
+  res.json(data.goals.filter(g => g.active));
 });
 
 app.post('/api/goals', (req, res) => {
@@ -147,6 +165,33 @@ app.delete('/api/goals/:id', (req, res) => {
   const id = parseInt(req.params.id, 10);
   store.update(d => { const g = d.goals.find(x => x.id === id); if (g) g.active = false; });
   res.status(204).end();
+});
+
+app.patch('/api/goals/:id', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const { done } = req.body;
+  let updated;
+  const data = store.update(d => {
+    resetExpiredGoals(d);
+    const g = d.goals.find(x => x.id === id);
+    if (!g) return;
+    const wasDone = g.done;
+    g.done   = !!done;
+    g.doneAt = g.done ? (g.doneAt || new Date().toISOString()) : null;
+    // Award XP when transitioning undone → done (same rules as quests).
+    // Un-checking does NOT reverse dashXpTotal — the counter is monotonic by design.
+    if (!wasDone && g.done) {
+      d.petState.xp   += g.xpValue;
+      d.petState.stage = stageFromXP(d.petState.xp);
+      d.petState.mood  = Math.min(100, d.petState.mood + 5);
+      d.dashXpTotal = (d.dashXpTotal || 0) + g.xpValue;
+      bumpConfig(d);
+    }
+    updated = g;
+  });
+  if (!updated) return res.status(404).json({ error: 'not found' });
+  broadcastConfigChange(data.configVersion, data.configUpdatedAt);
+  res.json({ goal: updated, petState: data.petState });
 });
 
 // ---------- Quests ---------------------------------------------------------
@@ -371,6 +416,21 @@ app.get('/api/pet', (req, res) => {
   res.json(store.get().petState);
 });
 
+// Reset XP/level/stage everywhere. The device can't be written directly, so
+// this bumps a monotonic petResetToken carried in every sync response; the
+// firmware applies it exactly once (persisted last-applied token in NVS).
+app.post('/api/pet/reset', (req, res) => {
+  const data = store.update(d => {
+    d.petResetToken  = (d.petResetToken || 0) + 1;
+    d.petState.xp    = 0;
+    d.petState.stage = 0;
+    d.dashXpTotal    = 0;  // device's dashXpApplied is zeroed by resetProgress()
+    bumpConfig(d);
+  });
+  broadcastConfigChange(data.configVersion, data.configUpdatedAt);
+  res.json({ petState: data.petState, petResetToken: data.petResetToken });
+});
+
 // ---------- Device sync ----------------------------------------------------
 
 app.post('/api/sync', (req, res) => {
@@ -380,6 +440,7 @@ app.post('/api/sync', (req, res) => {
   // date is always preferred so history records are consistent.
   const todayDate = new Date().toISOString().slice(0, 10);
   const data = store.update(d => {
+    resetExpiredGoals(d);  // lazy period rollover so the device gets fresh goals
     if (deviceId) d.settings.deviceId = deviceId;
     if (petState) {
       d.petState = { ...d.petState, ...petState, lastSyncedAt: new Date().toISOString() };
@@ -408,13 +469,75 @@ app.post('/api/sync', (req, res) => {
   });
   res.json({
     habits:        data.habits.filter(h => h.active),
-    goals:         data.goals.filter(g => g.active),
+    goals:         data.goals.filter(g => g.active && !g.done),
     quests:        data.quests.filter(q => q.active && !q.done),
     settings:      data.settings,
     // FIX 1: device uses these to delta-apply dashboard XP and stay in config sync
     dashXpTotal:   data.dashXpTotal   || 0,
+    petResetToken: data.petResetToken || 0,
     configVersion: data.configVersion || 1
   });
+});
+
+// ---------- USB sync bridge (start/stop from the dashboard) ----------------
+// Spawns usb-bridge.py as a child process so the device can sync over USB
+// serial without the user touching a terminal. The bridge has its own 2 s
+// reconnect loop, so it survives unplug/replug once started.
+
+const { spawn } = require('child_process');
+
+// In the Docker image the bridge sits next to server.js (/app/usb-bridge.py);
+// running from the repo it's one directory up.
+const BRIDGE_SCRIPT = [
+  path.join(__dirname, 'usb-bridge.py'),
+  path.join(__dirname, '..', 'usb-bridge.py'),
+].find(p => fs.existsSync(p));
+
+let bridgeProc = null;
+let bridgeLog  = [];
+function bridgeLogPush(line) {
+  if (!line) return;
+  bridgeLog.push(`[${new Date().toISOString().slice(11, 19)}] ${line}`);
+  if (bridgeLog.length > 100) bridgeLog.shift();
+}
+
+function startBridge(port = '/dev/ttyACM0') {
+  if (bridgeProc || !BRIDGE_SCRIPT) return !!bridgeProc;
+  // Talk to ourselves on the in-container port, not the published one.
+  bridgeProc = spawn('python3', ['-u', BRIDGE_SCRIPT, port, `http://localhost:${PORT}`]);
+  bridgeLogPush(`bridge started (pid ${bridgeProc.pid}, port ${port})`);
+
+  let buf = '';
+  const onData = chunk => {
+    buf += chunk.toString();
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      bridgeLogPush(buf.slice(0, nl).trimEnd());
+      buf = buf.slice(nl + 1);
+    }
+  };
+  bridgeProc.stdout.on('data', onData);
+  bridgeProc.stderr.on('data', onData);
+  bridgeProc.on('exit', (code, signal) => {
+    bridgeLogPush(`bridge exited (${signal || code})`);
+    bridgeProc = null;
+  });
+  return true;
+}
+
+app.get('/api/bridge/status', (req, res) => {
+  res.json({ running: !!bridgeProc, available: !!BRIDGE_SCRIPT, log: bridgeLog.slice(-15) });
+});
+
+app.post('/api/bridge/start', (req, res) => {
+  if (!BRIDGE_SCRIPT) return res.status(500).json({ error: 'usb-bridge.py not found' });
+  startBridge((req.body && req.body.port) || '/dev/ttyACM0');
+  res.json({ running: !!bridgeProc });
+});
+
+app.post('/api/bridge/stop', (req, res) => {
+  if (bridgeProc) bridgeProc.kill('SIGTERM');
+  res.json({ running: false });
 });
 
 // ---------- Config version (lightweight polling for device) ----------------
@@ -495,4 +618,8 @@ app.get('/api/storage', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`CyberPet dashboard running on port ${PORT}`);
+  // Auto-start the USB bridge: its own 2 s retry loop handles the device
+  // being unplugged, so it's safe to start even with nothing docked.
+  // The dashboard button remains a manual override (stop/restart).
+  if (startBridge()) console.log('USB bridge auto-started');
 });

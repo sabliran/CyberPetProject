@@ -4,6 +4,7 @@
   Keyboard shortcuts:
     d     - advance one day  (dailyTick + habit reset)
     x     - +25 XP
+    h     - advance one hour of hunger decay
     m     - toggle dev menu overlay
     space - count a rep (when workout screen is running)
     p     - simulate IMU pickup during Pomodoro focus (guilt-trip flash)
@@ -270,12 +271,27 @@ static void handle_sdl_events() {
             pet.addXP(25);
             ui.refreshPetScreen();
             break;
+          case SDLK_h:
+            pet.hungerHourlyTick();  // simulate one hour of hunger decay
+            ui.refreshPetScreen();
+            break;
           case SDLK_m:
             toggleDevMenu();
             break;
           case SDLK_SPACE:
             ui.addWorkoutRep();
             break;
+          case SDLK_s:
+            ui.sedentaryNudge();
+            break;
+          case SDLK_b: {
+            static int simBattState = 0;  // 0=full, 1=low, 2=charging
+            simBattState = (simBattState + 1) % 3;
+            if      (simBattState == 1) ui.updateBattery(10);
+            else if (simBattState == 2) ui.updateBattery(60, true);
+            else                        ui.updateBattery(100);
+            break;
+          }
           case SDLK_p:
             ui.pomodoroGuiltTrip();
             break;
@@ -291,6 +307,15 @@ static void main_loop_iter() {
   lv_tick_inc(now - last_tick);
   last_tick = now;
   handle_sdl_events();
+
+  // Press-and-hold manual sync: no dashboard in the sim, so fake a successful sync
+  // after a short spinner delay to exercise the overlay animation.
+  if (ui.consumeSyncRequest()) {
+    lv_timer_t* t = lv_timer_create(
+        [](lv_timer_t* tt) { ui.syncFinished(true); }, 1200, nullptr);
+    lv_timer_set_repeat_count(t, 1);  // one-shot; auto-deletes after firing
+  }
+
   lv_timer_handler();
   render_present();
 }
@@ -327,7 +352,37 @@ int main() {
   pet.init(fresh);
   ui.init(&pet, &habits);
 
+  // Demo quests (on-device these come from the dashboard sync response).
+  static const QuestInfo demoQuests[] = {
+    { "Read 10 pages",     30 },
+    { "Inbox zero",        25 },
+    { "Call grandma",      40 },
+  };
+  ui.setQuests(demoQuests, 3);
+
+  // Demo goals (on-device these come from the dashboard sync response).
+  static const GoalInfo demoGoals[] = {
+    { "Run 20km",         50, "weekly" },
+    { "No sugar",         15, "daily"  },
+  };
+  ui.setGoals(demoGoals, 2);
+
   createDevMenu();  // must be after lv_init and display registration
+
+  // Round-glass mask: the real device is a circular AMOLED, so anything in
+  // the square corners is physically invisible. Emulate that with a thick
+  // circular border ring on the sys layer (always on top, never clickable).
+  {
+    lv_obj_t* mask = lv_obj_create(lv_layer_sys());
+    lv_obj_set_size(mask, HOR_RES + 400, VER_RES + 400);
+    lv_obj_set_pos(mask, -200, -200);
+    lv_obj_set_style_radius(mask, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(mask, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(mask, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_border_width(mask, 200, 0);
+    lv_obj_set_style_border_opa(mask, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(mask, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+  }
 
 #ifdef __EMSCRIPTEN__
   emscripten_set_main_loop(main_loop_iter, 0, 1);

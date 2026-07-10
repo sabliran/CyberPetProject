@@ -6,6 +6,12 @@ services:
       - "8090:8080"
     volumes:
       - cyberpet-data:/app/data
+      # /dev passthrough so the in-container USB bridge sees the device even
+      # when it's plugged in after container start (hot-plug safe).
+      - /dev:/dev
+    device_cgroup_rules:
+      # allow ttyACM* (USB CDC serial, char major 166)
+      - 'c 166:* rmw'
     restart: unless-stopped
 
 volumes:

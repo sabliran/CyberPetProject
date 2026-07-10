@@ -25,9 +25,9 @@ const JSON_FILE = path.join(DATA_DIR, 'store.json');  // legacy — migrated on 
 
 const DEFAULT_TODOS = [
   // ── hardware ──────────────────────────────────────────────────────────────
-  { id: 1,  text: 'Wire PCF85063 RTC for accurate midnight habit resets', done: false, category: 'hardware' },
+  { id: 1,  text: 'Integrate onboard PCF85063 RTC for accurate standalone midnight resets (no soldering — chip is onboard on 1.75)', done: true,  category: 'firmware' },
   { id: 2,  text: 'Test firmware build on actual ESP32-S3 device', done: false, category: 'hardware' },
-  { id: 3,  text: 'Test touch input with Waveshare CST9217 driver', done: false, category: 'hardware' },
+  { id: 3,  text: 'Test touch input with the capacitive touch driver from Waveshare\'s 1.75 example', done: false, category: 'hardware' },
   // ── firmware ──────────────────────────────────────────────────────────────
   { id: 4,  text: 'Set WiFi credentials in CyberPet.ino and test sync', done: false, category: 'firmware' },
   { id: 5,  text: 'Verify NVS storage survives deep sleep / power cycle', done: false, category: 'firmware' },
@@ -36,41 +36,41 @@ const DEFAULT_TODOS = [
   // ── ui / sim ──────────────────────────────────────────────────────────────
   { id: 8,  text: 'Blob squash-and-stretch on roam landing', done: true,  category: 'ui' },
   { id: 9,  text: 'Eyes follow touch / cursor direction', done: false, category: 'ui' },
-  { id: 10, text: 'Particle burst on level-up / evolution', done: false, category: 'ui' },
+  { id: 10, text: 'Particle burst on level-up / evolution', done: true,  category: 'ui' },
   { id: 11, text: 'Test all 4 evolution stages on real AMOLED display', done: false, category: 'ui' },
   // ── dashboard ─────────────────────────────────────────────────────────────
-  { id: 12, text: 'Add streak chart / completion history heatmap', done: false, category: 'dashboard' },
+  { id: 12, text: 'Add streak chart / completion history heatmap', done: true,  category: 'dashboard' },
   { id: 13, text: 'Export pet + habit history to JSON backup', done: true,  category: 'dashboard' },
-  { id: 14, text: 'Add push-style config reload so device picks up changes instantly', done: false, category: 'dashboard' },
+  { id: 14, text: 'Add push-style config reload so device picks up changes instantly', done: true,  category: 'dashboard' },
 
   // ── known gaps (from README) ───────────────────────────────────────────────
-  { id: 15, text: 'RTC midnight reset via PCF85063 — replace millis() daily tick (drifts, wrong time after reboot)', done: false, category: 'firmware' },
-  { id: 16, text: 'Wire dashboard settings into firmware: moodGainPerHabit, moodDecayPerMiss, dailyResetHour', done: false, category: 'firmware' },
-  { id: 17, text: 'Add serverId to Habit struct — fix rename-resets-streak (currently name-based reconciliation)', done: false, category: 'firmware' },
+  { id: 15, text: 'RTC midnight reset via onboard PCF85063 — replace the millis() standalone fallback (NTP wall-clock path already done; see #1)', done: true,  category: 'firmware' },
+  { id: 16, text: 'Wire dashboard settings into firmware: moodGainPerHabit, moodDecayPerMiss, dailyResetHour', done: true,  category: 'firmware' },
+  { id: 17, text: 'Add serverId to Habit struct — fix rename-resets-streak (currently name-based reconciliation)', done: true,  category: 'firmware' },
   { id: 18, text: 'Sync goals to on-device screen (API + dashboard UI exist; wifi_sync.cpp not wired)', done: false, category: 'firmware' },
-  { id: 19, text: 'Upgrade ArduinoJson v6 → v7: rename StaticJsonDocument to JsonDocument (two-line change)', done: false, category: 'firmware' },
-  { id: 20, text: 'Store completion history per-date (server currently keeps only latest completion list)', done: false, category: 'dashboard' },
+  { id: 19, text: 'Upgrade ArduinoJson v6 → v7: rename StaticJsonDocument to JsonDocument (two-line change)', done: true,  category: 'firmware' },
+  { id: 20, text: 'Store completion history per-date (server currently keeps only latest completion list)', done: true,  category: 'dashboard' },
   { id: 21, text: 'Add auth before exposing dashboard outside LAN — no auth currently', done: false, category: 'dashboard' },
-  { id: 22, text: 'Swap single JSON file store for SQLite/DB for history & analytics (isolated in store.js)', done: false, category: 'dashboard' },
+  { id: 22, text: 'Swap single JSON file store for SQLite/DB for history & analytics (isolated in store.js)', done: true,  category: 'dashboard' },
 
   // ── quick wins (roadmap) ──────────────────────────────────────────────────
-  { id: 23, text: 'Streak display on pet screen (already tracked per habit, just not surfaced)', done: false, category: 'ui' },
-  { id: 24, text: 'Completion celebration — confetti / particle burst on habit check-off', done: false, category: 'ui' },
-  { id: 25, text: 'Pet idle animations: slow bounce, blink overlay, mood-based wobble speed', done: false, category: 'ui' },
-  { id: 26, text: 'Pet regression: low mood can demote evolution stage (check in checkEvolution)', done: false, category: 'firmware' },
+  { id: 23, text: 'Longest-streak display on pet screen (per-habit streaks already shown on habit list rows)', done: false, category: 'ui' },
+  { id: 24, text: 'Completion celebration — confetti / particle burst on habit check-off (XP popup exists)', done: false, category: 'ui' },
+  { id: 25, text: 'Pet idle animations: slow bounce, blink overlay, mood-based wobble speed', done: true,  category: 'ui' },
+  { id: 26, text: 'Pet regression: low mood can demote evolution stage (check in checkEvolution)', done: true,  category: 'firmware' },
 
   // ── medium projects (roadmap) ─────────────────────────────────────────────
-  { id: 27, text: 'Pomodoro mode: ring countdown on round screen, XP per completed block, IMU guilt-trip on pickup mid-focus', done: false, category: 'ui' },
+  { id: 27, text: 'Pomodoro mode: ring countdown on round screen, XP per completed block, IMU guilt-trip on pickup mid-focus', done: true,  category: 'ui' },
   { id: 28, text: 'Custom pixel-art sprites per evolution stage (LVGL image converter, PNG → C array)', done: false, category: 'ui' },
   { id: 29, text: 'QMI8658 IMU: wake screen on pickup, blob dizzy animation on shake', done: false, category: 'hardware' },
-  { id: 30, text: 'AXP2101 battery status indicator — warn when pet is "getting sleepy"', done: false, category: 'hardware' },
-  { id: 31, text: 'Movement / sedentary nudge: droopy blob + mood tick after ~1 h of no movement', done: false, category: 'ui' },
+  { id: 30, text: 'AXP2101 battery status indicator — warn when pet is "getting sleepy"', done: true,  category: 'hardware' },
+  { id: 31, text: 'Movement / sedentary nudge: droopy blob + mood tick after ~1 h of no movement', done: true,  category: 'ui' },
 
   // ── bigger ideas (roadmap) ────────────────────────────────────────────────
   { id: 32, text: 'n8n / self-hosted webhook on completion events: Discord alerts, DB logging, evening reminders', done: false, category: 'dashboard' },
   { id: 33, text: 'Habitica bridge — sync completions to a real Habitica account via their open API', done: false, category: 'dashboard' },
   { id: 34, text: 'Step counting: QMI8658 pedometer in carry mode, or phone-as-sensor posting to /api/sync', done: false, category: 'hardware' },
-  { id: 35, text: 'Port to Waveshare 1.75" AMOLED — only display/touch init block in CyberPet.ino changes', done: false, category: 'hardware' },
+  { id: 35, text: 'Port to Waveshare 1.75" AMOLED — only display/touch init block in CyberPet.ino changes', done: true,  category: 'hardware' },
 ];
 
 const DEFAULT_DATA = {

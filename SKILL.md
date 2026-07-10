@@ -2,9 +2,10 @@
 name: cyberpet
 description: >
   Conventions and architecture for the CyberPet project — a habit-tracking
-  virtual pet for the Waveshare ESP32-S3-Touch-AMOLED-1.43C, plus its Docker
-  web dashboard. Read this before creating, editing, or debugging any file in
-  this project so changes stay consistent with the existing architecture.
+  virtual pet for the Waveshare ESP32-S3-Touch-AMOLED-1.75 (plain variant,
+  not -C, not -G), plus its Docker web dashboard. Read this before creating,
+  editing, or debugging any file in this project so changes stay consistent
+  with the existing architecture.
   Triggers: any work on the ESP32 firmware (pet/habits/storage/ui/wifi_sync,
   CyberPet.ino), the dashboard (Express server, store.js, the HTML/JS control
   panel), the device<->dashboard sync protocol, or porting to another
@@ -33,17 +34,23 @@ Sync reconciles the two.
 Logic files are **hardware-agnostic** and contain zero pin references:
 `pet.h/.cpp`, `habits.h/.cpp`, `storage.h/.cpp`, `ui.h/.cpp`,
 `wifi_sync.h/.cpp`. Keep them that way — it's what makes board swaps
-(e.g. to the 1.75") a drop-in.
+(e.g. back to the 1.43C — see the firmware README's porting notes) a
+drop-in.
 
 All board-specific code lives at exactly **two integration points** in
 `CyberPet.ino`, both marked with `// TODO`:
 1. display + touch + LVGL init in `setup()`
 2. `lv_timer_handler()` / tick calls in `loop()`
 
-These come from Waveshare's own example project for the board (the
-`02_Example` folder in their repo), because pin mappings and driver init
-sequences are board-specific. Never hardcode guessed pin numbers — point the
-user to their board's example instead.
+These come from Waveshare's own example project for the **target board**
+(for the 1.75: `github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.75` —
+verify the example folder layout against that repo; it does not mirror the
+1.43C's numbered 01–05 structure). Pin numbers and driver init sequences
+always come from the target board's own Waveshare example, never from docs
+or memory — never hardcode guessed GPIOs; point the user to their board's
+example instead. Don't name a specific touch controller for the 1.75 in
+docs or comments (sources conflict); say "capacitive touch (I2C), driver
+from Waveshare's example".
 
 ## Hard rules (violating these reintroduces fixed bugs)
 
@@ -83,7 +90,13 @@ user to their board's example instead.
   `ui.cpp` to stash the habit index on list buttons) require ≥8.2. LVGL v9
   needs mechanical renames (`lv_btn_*` → `lv_button_*`, some style signatures).
   Always check which version the board's example ships before compiling.
-- **ArduinoJson v6** (`StaticJsonDocument`). On v7 rename to `JsonDocument`.
+  **Known mismatch to reconcile at integration time:** `web_sim` pins LVGL
+  v8.3.11, while the 1.75 repo's Arduino example bundles v8.4.0 per its
+  `libraries/lvgl/library.json` (read from GitHub July 2026 — can't be
+  compile-verified off-device). Both are v8.x so the ≥8.2 assumptions hold,
+  but pick one and align sim + device when integrating; don't guess.
+- **ArduinoJson v7+** (`JsonDocument`). On v6, rename back to
+  `StaticJsonDocument<N>` / `DynamicJsonDocument(N)`.
 
 ## Dashboard extension point
 
@@ -91,8 +104,10 @@ user to their board's example instead.
 This is the seam: to add persistence features or swap to a different database,
 change `store.js` only — server routes never touch storage directly.
 New API routes go in `server.js`; keep the existing REST shape
-(`/api/habits`, `/api/goals`, `/api/settings`, `/api/pet`, `/api/sync`,
-`/api/history`, `/api/history/streaks`).
+(`/api/habits` incl. `/:id/complete`, `/api/goals`, `/api/quests`,
+`/api/todos`, `/api/devnotes`, `/api/settings`, `/api/pet`, `/api/sync`,
+`/api/config-version`, `/api/events` (SSE), `/api/history`,
+`/api/history/streaks`, `/api/export`, `/api/storage`).
 
 `appendCompletions` is called **inside** a `store.update()` callback (not
 standalone) so the pet-state write and log append land in a single SQLite
@@ -105,6 +120,51 @@ own `update()` call — `appendCompletions` is for device sync only.
 
 ## Sync protocol (device ↔ dashboard)
 
+### USB bridge (preferred transport when plugged in)
+`WifiSync::sync()` is transport-split: `buildSyncRequest()` /
+`applySyncResponse()` are shared, and the transport is chosen per attempt.
+If a host has the USB CDC port open (`usbAvailable()`), the device first
+sends `SYNC <request-json>\n` over serial and waits 2 s for
+`SYNCRESP <response-json>\n`; on timeout it falls back to WiFi HTTP.
+`CyberPetDashboard/usb-bridge.py` (stdlib-only Python) is the host side:
+it relays SYNC lines to POST /api/sync and echoes all other device log
+lines, doubling as the serial monitor — never run `cat /dev/ttyACM0`
+alongside it (two readers split the stream).
+The bridge also runs INSIDE the dashboard container: it AUTO-STARTS with
+the server (safe with nothing docked — the bridge retries the port every
+2 s) and can be stopped/restarted from the dashboard topbar button or
+`/api/bridge/start|stop|status` (server.js
+spawns `python3 usb-bridge.py`; status returns the last log lines). The
+compose file passes `/dev` through with a cgroup rule for char major 166
+(ttyACM*), so it hot-plugs and needs no host chmod. Only ONE bridge may
+run at a time — don't start the container bridge while a terminal
+`petbridge` is attached to the same port. The full sync runs when
+WiFi is configured OR USB is attached, so a USB-only setup syncs with no
+WiFi credentials at all; the interval is 10 s while USB is attached
+(SYNC_INTERVAL_USB_MS), 60 s otherwise. Firmware must call `Serial.setRxBufferSize(4096)`
+BEFORE `Serial.begin()` — the response burst overflows the 256 B HWCDC
+default.
+
+### Dashboard addressing
+DASHBOARD_URL may use a `*.local` mDNS hostname (e.g.
+`http://omarchy.local:8090`) instead of a LAN IP: `WifiSync::resolveServerUrl()`
+resolves it via ESPmDNS once after WiFi connects and re-resolves after a
+connection-level HTTP failure (DHCP lease moved). Non-.local URLs pass
+through untouched. The host must be running avahi/mDNS.
+
+### Push config via SSE (primary path)
+At boot the device opens a persistent `GET /api/events` SSE connection
+(`WifiSync::beginEventStream()`). The server sends `event: config\ndata:
+{"version":N}\n\n` immediately after every dashboard edit. The device reads
+this non-blocking in every `loop()` tick (`pollEventStream()`) and calls
+`sync()` the moment the event arrives — latency is typically <1 s.
+
+If the stream drops (server restart, network hiccup), `pollEventStream()` sets
+`sseConnected = false`; the loop retries `beginEventStream()` every 5 s and
+falls back to the 5 s `checkConfig` poll in the meantime. The 60 s full sync
+remains as the final safety net.
+
+### Full sync (every 60 s, or triggered by push/poll)
 Device POSTs to `/api/sync`:
 ```json
 { "deviceId": "<mac>", "petState": {...},
@@ -122,16 +182,39 @@ and adopts the server id on a name-match so future syncs skip the name compare.
 
 ## Known gaps to be aware of (don't "rediscover" them as bugs)
 
-- Daily reset is **wall-clock-based via NTP** when WiFi is configured; falls
-  back to the original `millis()`/24 h uptime path when standalone.
-  `dailyResetHour` is now consumed from dashboard settings (default: 4 AM).
-  An external I2C RTC (PCF85063/DS3231) can be added later by subclassing
-  `TimeKeeper` and overriding `now()` — **do NOT write RTC driver code yet**,
-  the I2C pads on the 1.43C are unverified.
+- Daily reset uses the **PCF85063 onboard RTC** (I2C addr 0x51, fixed by
+  spec) when available, NTP as a secondary source, and `millis()`/24 h
+  uptime only as last resort (RTC stale + no WiFi = first ever boot).
+  `RtcTimeKeeper` subclasses `TimeKeeper` and overrides `now()`; the RTC
+  is set from NTP once per session and retains time across power cycles.
+  `dailyResetHour` is consumed from dashboard settings (default: 4 AM).
+  Wire (I2C bus) is started by Waveshare's board init before `initRtc()`
+  is called — never add `Wire.begin()` in the firmware files; leave that
+  to the Waveshare example's init block in `CyberPet.ino`.
 - `timekeeping.cpp` is **firmware-only** (excluded from the sim build, same
   pattern as `storage.cpp`/`wifi_sync.cpp`). The sim 'd' key still calls
   `pet.dailyTick`/`habits.resetDaily` directly in `main_web.cpp`.
-- Goals exist in the dashboard/API but aren't synced to the device yet.
+- Quests AND goals are synced (read-only): the sync response's `quests` and
+  `goals` arrays are parsed into `WifiSync::quests`/`goals` and displayed on
+  the device's quest screen (pet screen swipe-right) and goal screen (quest
+  screen swipe-right — the carousel is pet > quests > goals, swipe left to
+  walk back). Completing a quest/goal happens on the dashboard. Both arrays
+  use the API's camelCase field names (`xpValue`), never the SQL column names.
+  Both lists are cached in NVS (`Storage::saveQuests`/`saveGoals`, change-
+  guarded) on every successful sync and restored at boot, so they survive
+  reboots instead of vanishing until the next sync.
+- Manual sync: press & hold on the pet screen (LVGL long-press, ~400 ms;
+  blob events bubble so holding the blob works too) sets a flag consumed by loop()
+  (`ui.consumeSyncRequest()`), which runs `sync()` and reports back via
+  `ui.syncFinished(ok)` — a spinner overlay animates meanwhile (LVGL runs in
+  a FreeRTOS task on-device, so it animates through the blocking HTTP call).
+- Tapping a done habit on the device un-does it (streak decrement + exact
+  XP/mood revert via `Pet::removeXP`). But there is no un-complete in the
+  sync API: if a sync already ran, the dashboard's completion-log entry for
+  that day remains (dedupe means a re-complete won't double-log either).
+- LVGL v8 style transforms (`transform_zoom`/`transform_angle`) crash the
+  real device's render path on plain objects — they're image-only in v8.
+  Animate width/height instead (see the blob's landing squash / pat puff).
 - Renaming a habit on the dashboard now **preserves on-device streaks** —
   reconciliation is id-first (`Habit::serverId`), with truncation-aware name
   fallback for first-sync / legacy unsynced habits.
@@ -158,4 +241,8 @@ firmware code needs more Arduino API than that shim provides, keep it out of
 the hardware-agnostic files. `storage.cpp`/`wifi_sync.cpp` are firmware-only
 and never part of the sim build. LVGL is pinned to v8.3.11 in
 `web_sim/CMakeLists.txt`; keep it matching whatever the device build uses.
-Sim shortcuts: `d` = day rollover, `x` = +25 XP.
+Sim shortcuts: `d` = day rollover, `x` = +25 XP, `m` = dev menu,
+`space` = workout rep, `s` = sedentary nudge, `b` = battery cycle (100% → 10% → 60% charging),
+`p` = Pomodoro guilt-trip. Press & hold on the pet screen = manual sync
+(sim fakes a success after 1.2 s); a quick click on the blob = pat/love
+reaction; mouse-drag = swipe gestures.

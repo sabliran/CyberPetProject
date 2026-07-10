@@ -136,18 +136,86 @@ document.getElementById('habitForm').addEventListener('submit', async (e) => {
   loadHabits();
 });
 
+// ---- Danger zone: XP reset --------------------------------------------------
+
+document.getElementById('resetXpBtn').addEventListener('click', async () => {
+  if (!confirm('Reset XP, level and stage to zero — on the dashboard AND the device?')) return;
+  try {
+    const r = await api('/pet/reset', { method: 'POST' });
+    if (r.petState) refreshPetStats(r.petState);
+    const flag = document.getElementById('resetXpFlag');
+    flag.classList.add('show');
+    setTimeout(() => flag.classList.remove('show'), 4000);
+  } catch (_) {}
+});
+
+// ---- USB bridge control -----------------------------------------------------
+
+let bridgeRunning = false;
+
+function renderBridge() {
+  document.getElementById('bridgeDot').classList.toggle('online', bridgeRunning);
+  document.getElementById('bridgeBtn').textContent =
+    bridgeRunning ? 'stop USB bridge' : 'start USB bridge';
+}
+
+async function refreshBridgeStatus() {
+  try {
+    const s = await api('/bridge/status');
+    bridgeRunning = s.running;
+  } catch (_) { bridgeRunning = false; }
+  renderBridge();
+}
+
+document.getElementById('bridgeBtn').addEventListener('click', async () => {
+  try {
+    const s = await api(bridgeRunning ? '/bridge/stop' : '/bridge/start', { method: 'POST' });
+    bridgeRunning = s.running;
+  } catch (_) {}
+  renderBridge();
+  setTimeout(refreshBridgeStatus, 1500);  // catch an immediate crash-exit
+});
+
+refreshBridgeStatus();
+setInterval(refreshBridgeStatus, 5000);
+
+// Update the pet header after an XP-awarding action (quest/goal completion).
+function refreshPetStats(ps) {
+  document.getElementById('petXP').textContent   = ps.xp ?? 0;
+  document.getElementById('petMood').textContent = `${ps.mood ?? 0}%`;
+  const blob  = document.getElementById('petBlob');
+  const color = STAGE_COLORS[ps.stage] ?? '#6FD08C';
+  blob.style.background = `radial-gradient(circle at 32% 28%, rgba(255,255,255,0.35), transparent 55%), ${color}`;
+  blob.style.color = color;
+  document.getElementById('petStage').textContent = STAGE_NAMES[ps.stage] ?? '—';
+}
+
 // ---- Goals ----------------------------------------------------------------
 
 function goalRow(goal) {
   const li = document.createElement('li');
-  li.className = 'itemlist__row';
+  // Reuses the quest checkbox styling — identical done/undone interaction.
+  li.className = `itemlist__row quest-row${goal.done ? ' quest-row--done' : ''}`;
   li.innerHTML = `
-    <span class="itemlist__name">${escapeHtml(goal.name)}</span>
+    <label class="quest-check">
+      <input type="checkbox" class="quest-checkbox" data-id="${goal.id}" ${goal.done ? 'checked' : ''}>
+      <span class="quest-name">${escapeHtml(goal.name)}</span>
+    </label>
     <span class="itemlist__meta">
       <span class="itemlist__period">${goal.period}</span>
       <span class="itemlist__xp">+${goal.xpValue} xp</span>
       <button class="itemlist__remove" title="Remove" data-id="${goal.id}">✕</button>
     </span>`;
+
+  li.querySelector('.quest-checkbox').addEventListener('change', async (e) => {
+    const result = await api(`/goals/${goal.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ done: e.target.checked })
+    });
+    if (result.petState) refreshPetStats(result.petState);
+    loadGoals();
+  });
+
   li.querySelector('.itemlist__remove').addEventListener('click', async () => {
     await api(`/goals/${goal.id}`, { method: 'DELETE' });
     loadGoals();
@@ -159,10 +227,12 @@ async function loadGoals() {
   const goals = await api('/goals');
   const list = document.getElementById('goalList');
   list.innerHTML = '';
-  if (goals.length === 0) {
+  // Show pending first, then done (matches the quest list)
+  const sorted = [...goals.filter(g => !g.done), ...goals.filter(g => g.done)];
+  if (sorted.length === 0) {
     list.innerHTML = '<li class="itemlist__empty">No goals yet — add one below.</li>';
   } else {
-    goals.forEach(g => list.appendChild(goalRow(g)));
+    sorted.forEach(g => list.appendChild(goalRow(g)));
   }
 }
 
@@ -199,16 +269,7 @@ function questRow(quest) {
       body: JSON.stringify({ done: e.target.checked })
     });
     // Refresh pet stats since XP may have changed
-    if (result.petState) {
-      const ps = result.petState;
-      document.getElementById('petXP').textContent   = ps.xp ?? 0;
-      document.getElementById('petMood').textContent = `${ps.mood ?? 0}%`;
-      const blob  = document.getElementById('petBlob');
-      const color = STAGE_COLORS[ps.stage] ?? '#6FD08C';
-      blob.style.background = `radial-gradient(circle at 32% 28%, rgba(255,255,255,0.35), transparent 55%), ${color}`;
-      blob.style.color = color;
-      document.getElementById('petStage').textContent = STAGE_NAMES[ps.stage] ?? '—';
-    }
+    if (result.petState) refreshPetStats(result.petState);
     loadQuests();
   });
 

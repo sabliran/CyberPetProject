@@ -16,7 +16,13 @@
       <span class="topbar__label">CYBERPET</span>
       <span class="topbar__sub">control panel</span>
     </div>
-    <div class="topbar__sync" id="syncStatus">— never synced —</div>
+    <div class="topbar__right">
+      <div class="topbar__bridge" title="Relay device sync over USB serial — plug the pet in first">
+        <span class="topbar__dot" id="bridgeDot"></span>
+        <button class="topbar__bridgebtn" id="bridgeBtn">start USB bridge</button>
+      </div>
+      <div class="topbar__sync" id="syncStatus">— never synced —</div>
+    </div>
   </header>
 
   <nav class="tabnav">
@@ -168,6 +174,14 @@
         <p class="backup__desc">Downloads a JSON snapshot of your pet state, habits, goals, quests, and full completion history.</p>
         <a class="backup__btn" href="/api/export" download>Export JSON backup</a>
         <div class="backup__info" id="backupInfo"></div>
+      </section>
+
+      <!-- Danger zone -->
+      <section class="panel panel--danger">
+        <h2 class="panel__title">Danger zone</h2>
+        <p class="backup__desc">Resets XP, level, and evolution stage to zero — here and on the device (applied on its next sync, within ~10&nbsp;s on USB). Habits, streaks, mood, and history are kept.</p>
+        <button class="danger-btn" id="resetXpBtn">Reset XP &amp; level</button>
+        <span class="savedFlag" id="resetXpFlag">Reset — device applies on next sync</span>
       </section>
 
     </div>

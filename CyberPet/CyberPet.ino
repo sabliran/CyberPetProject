@@ -1,13 +1,16 @@
 /*
-  CyberPet - habit-tracking virtual pet for ESP32-S3-Touch-AMOLED-1.43C
+  CyberPet - habit-tracking virtual pet for ESP32-S3-Touch-AMOLED-1.75
+  (plain variant; the -G adds GPS, not needed here)
 
   INTEGRATION NOTE:
   This sketch assumes you've dropped pet.h/.cpp, habits.h/.cpp, storage.h/.cpp,
   ui.h/.cpp, wifi_sync.h/.cpp, and timekeeping.h/.cpp into Waveshare's own
-  example project for this board (github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.43C,
-  folder 02_Example).
+  example project for this board
+  (github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.75 - verify the example
+  folder layout against that repo; it does NOT mirror the 1.43C's numbered
+  01-05 structure).
 
-  That example already contains the correct display/touch/QSPI init code for
+  That example contains the correct display/touch/QSPI init code for
   this exact board - copy the display + touch init calls from their
   setup() into the marked section below rather than reinventing them,
   since pin numbers and driver init sequences are board-specific.
@@ -35,15 +38,15 @@ const char* DASHBOARD_URL = "http://192.168.1.50:8090"; // docker host's LAN IP
 const char* TIMEZONE = "UTC0";
 
 // --- TODO: include Waveshare's display/touch driver headers here ---
-// e.g. #include "lv_port_disp.h" / their CO5300 + touch driver includes,
-// copied from the 02_Example project in their repo.
+// Their display + capacitive-touch (I2C) driver includes, copied from the
+// Arduino example in github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.75.
 
 Pet pet;
 HabitTracker habits;
 Storage storage;
 PetUI ui;
 WifiSync wifiSync;
-TimeKeeper timeKeeper;
+RtcTimeKeeper timeKeeper;   // PCF85063 onboard the 1.75; falls back to NTP if RTC stale
 
 // Wall-clock daily-reset state (NTP path).
 // Loaded from NVS in setup(); -1 means "never reset" (first boot).
@@ -60,11 +63,17 @@ static const uint32_t DAY_MS = 24UL * 60UL * 60UL * 1000UL;
 
 uint32_t lastSyncAttempt   = 0;
 const uint32_t SYNC_INTERVAL_MS = 60UL * 1000UL;
+const uint32_t SYNC_INTERVAL_USB_MS = 10UL * 1000UL;  // faster cadence when docked over USB
+static int lastXpResetToken = 0;  // last dashboard XP-reset applied (NVS-backed)
 
 uint32_t lastConfigCheck   = 0;
 const uint32_t CONFIG_CHECK_MS = 5UL * 1000UL;
 
 void setup() {
+  // USB sync bridge sends ~1 KB responses in one burst; the HWCDC default
+  // RX buffer (256 B) would overflow. Must be set before Serial.begin().
+  // (ESP32-S3 USB CDC only — remove if the board routes Serial to a UART.)
+  Serial.setRxBufferSize(4096);
   Serial.begin(115200);
 
   // --- TODO: call Waveshare's display + touch init functions here ---
@@ -90,6 +99,21 @@ void setup() {
 
   ui.init(&pet, &habits);
 
+  // Restore the last-synced quest/goal lists from NVS so they don't vanish
+  // on reboot while waiting for the next sync.
+  {
+    QuestInfo cachedQuests[MAX_QUESTS];
+    GoalInfo  cachedGoals[MAX_GOALS];
+    int nq = storage.loadQuests(cachedQuests);
+    int ng = storage.loadGoals(cachedGoals);
+    ui.setQuests(cachedQuests, nq);
+    ui.setGoals(cachedGoals, ng);
+  }
+
+  // Init RTC — Wire must already be running (Waveshare's board init starts it).
+  // ⚠ board-specific; not compile-verified off-device.
+  timeKeeper.initRtc();
+
   // Optional: connect to the dashboard and start NTP.
   // Leave WIFI_SSID empty above to skip entirely and run fully standalone.
   if (strlen(WIFI_SSID) > 0) {
@@ -103,6 +127,10 @@ void setup() {
       setenv("TZ", TIMEZONE, 1);
       tzset();
       ntpEnabled = true;
+
+      // Subscribe to dashboard SSE push stream for instant config reload.
+      // If this fails at boot, loop() retries every 5 s.
+      wifiSync.beginEventStream();
     }
   }
 
@@ -110,8 +138,31 @@ void setup() {
   // double-resets after a reboot that happens after midnight).
   lastResetYear = storage.loadLastResetYear();
   lastResetDOY  = storage.loadLastResetDay();
+  lastXpResetToken = storage.loadXpResetToken();
 
   lastDailyCheck  = millis();
+  lastSyncAttempt = millis();
+}
+
+// After every successful sync: push results to the UI and cache the
+// dashboard-owned lists in NVS (change-guarded) so they survive reboots.
+static void applySyncResults() {
+  ui.refreshHabitScreen();
+  ui.setQuests(wifiSync.getQuests(), wifiSync.getQuestCount());
+  ui.setGoals(wifiSync.getGoals(), wifiSync.getGoalCount());
+  storage.saveHabits(habits);
+  storage.saveQuests(wifiSync.getQuests(), wifiSync.getQuestCount());
+  storage.saveGoals(wifiSync.getGoals(), wifiSync.getGoalCount());
+
+  // One-shot XP reset from the dashboard (Options tab): applied exactly once
+  // per token, remembered across reboots.
+  if (wifiSync.getPetResetToken() > lastXpResetToken) {
+    lastXpResetToken = wifiSync.getPetResetToken();
+    pet.resetProgress();
+    storage.savePet(pet.getState());
+    storage.saveXpResetToken(lastXpResetToken);
+    ui.refreshPetScreen();
+  }
   lastSyncAttempt = millis();
 }
 
@@ -129,7 +180,18 @@ static void fireDailyReset() {
 void loop() {
   // --- TODO: call Waveshare's LVGL tick/handler functions here ---
   // Typically: lv_timer_handler(); plus a millis()-based lv_tick_inc() call,
-  // exactly as shown in their example's loop().
+  // exactly as shown in the loop() of the Arduino example in
+  // github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.75.
+
+  // ── One-time NTP → RTC stamp ─────────────────────────────────────────────
+  // Once NTP first syncs, write the local time into the PCF85063 so future
+  // standalone boots have accurate wall-clock resets without WiFi.
+  static bool rtcSyncedFromNtp = false;
+  if (ntpEnabled && !rtcSyncedFromNtp) {
+    if (timeKeeper.syncRtcFromNtp()) {
+      rtcSyncedFromNtp = true;
+    }
+  }
 
   // ── Daily reset ──────────────────────────────────────────────────────────
   // resetHour is the local hour at which habits roll over.  After the first
@@ -137,7 +199,9 @@ void loop() {
   // compile-time default (4 AM).
   int resetHour = pet.getSettings().dailyResetHour;
 
-  if (ntpEnabled && timeKeeper.hasSync()) {
+  // RTC provides hasSync() even without WiFi once it has been set once.
+  // Falls back to millis()/24 h only when RTC is stale AND no NTP available.
+  if (timeKeeper.hasSync()) {
     // Wall-clock path: fires once per calendar day at resetHour local time.
     // Reboot-safe: lastResetDOY is persisted in NVS, so a reboot just after
     // midnight won't double-fire, and a reboot before resetHour won't skip.
@@ -175,6 +239,18 @@ void loop() {
     }
   }
 
+  // ── Hourly hunger decay ──────────────────────────────────────────────────
+  // Hunger drains continuously (HUNGER_DECAY_PER_HOUR in pet.h) so feeding
+  // via workouts is a recurring need, not a once-and-done. Uptime-based on
+  // purpose: no persistence needed, and a reboot just delays one tick.
+  static uint32_t lastHungerDecay = 0;
+  static const uint32_t HUNGER_TICK_MS = 60UL * 60UL * 1000UL;
+  if (millis() - lastHungerDecay >= HUNGER_TICK_MS) {
+    lastHungerDecay = millis();
+    pet.hungerHourlyTick();
+    ui.refreshPetScreen();
+  }
+
   // ── Change-guarded NVS save ───────────────────────────────────────────────
   // Only writes to flash when state actually changed. No wear from idle loops.
   static uint32_t lastSaveCheck = 0;
@@ -200,27 +276,61 @@ void loop() {
     }
   }
 
+  // ── Manual sync (press & hold on the pet screen) ────────────────────────
+  // ui.syncStarted() already showed the spinner from the tap handler; sync()
+  // blocks on HTTP here and the outcome is reported via ui.syncFinished().
+  if (ui.consumeSyncRequest()) {
+    // sync() tries the USB bridge first, then WiFi; works USB-only too.
+    bool ok = wifiSync.sync(&pet, &habits);
+    if (ok) applySyncResults();
+    ui.syncFinished(ok);
+  }
+
   // ── WiFi sync ─────────────────────────────────────────────────────────────
   if (strlen(WIFI_SSID) > 0) {
-    // Fast config-version poll (every 5 s) — triggers an immediate full sync
-    // only when the dashboard config version has advanced (settings/habits changed).
-    if (millis() - lastConfigCheck > CONFIG_CHECK_MS) {
-      lastConfigCheck = millis();
-      if (wifiSync.checkConfig(&pet, &habits)) {
-        ui.refreshHabitScreen();
-        storage.saveHabits(habits);
-        lastSyncAttempt = millis();
+    static uint32_t lastSseConnectAttempt = 0;
+
+    if (wifiSync.isEventStreamConnected()) {
+      // SSE stream is live: read any pending events (non-blocking).
+      // Triggers sync() immediately when "event: config" arrives.
+      if (wifiSync.pollEventStream(&pet, &habits)) applySyncResults();
+    } else {
+      // SSE down: fall back to 5 s config-version poll for near-instant pickup
+      // and retry opening the stream every 5 s.
+      if (millis() - lastConfigCheck > CONFIG_CHECK_MS) {
+        lastConfigCheck = millis();
+        if (wifiSync.checkConfig(&pet, &habits)) applySyncResults();
+      }
+      if (millis() - lastSseConnectAttempt > 5000) {
+        lastSseConnectAttempt = millis();
+        wifiSync.beginEventStream();
       }
     }
 
-    // Full sync fallback — catches pet-state push even when config didn't change.
-    if (millis() - lastSyncAttempt > SYNC_INTERVAL_MS) {
-      lastSyncAttempt = millis();
-      if (wifiSync.sync(&pet, &habits)) {
-        ui.refreshHabitScreen();
-        storage.saveHabits(habits);
-      }
-    }
+  }
+
+  // Full sync — every 10 s while a USB host is attached (cheap local bridge),
+  // every 60 s over WiFi (sync() itself prefers the USB bridge over WiFi HTTP).
+  uint32_t syncInterval = wifiSync.usbAvailable() ? SYNC_INTERVAL_USB_MS : SYNC_INTERVAL_MS;
+  if ((strlen(WIFI_SSID) > 0 || wifiSync.usbAvailable()) &&
+      millis() - lastSyncAttempt > syncInterval) {
+    lastSyncAttempt = millis();
+    if (wifiSync.sync(&pet, &habits)) applySyncResults();
+  }
+
+  // ── Battery status ────────────────────────────────────────────────────────
+  // TODO: replace stub with real AXP2101 I2C read.
+  // Driver + I2C init come from the 1.75 example at:
+  //   github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.75
+  // (board-specific; not compile-verified off-device)
+  // Example call once driver is initialised:
+  //   int battPct = axp.getBatteryPercent();  // or equivalent from Waveshare's driver
+  //   ui.updateBattery(battPct);
+  static uint32_t lastBattCheck = 0;
+  static const uint32_t BATT_CHECK_MS = 60UL * 1000UL;
+  if (millis() - lastBattCheck > BATT_CHECK_MS) {
+    lastBattCheck = millis();
+    // ui.updateBattery(axp.getBatteryPercent());
   }
 
   delay(5);

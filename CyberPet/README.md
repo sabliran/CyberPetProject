@@ -1,16 +1,30 @@
 # CyberPet
 
-A habit-tracking virtual pet for the Waveshare ESP32-S3-Touch-AMOLED-1.43C.
+A habit-tracking virtual pet for the Waveshare ESP32-S3-Touch-AMOLED-1.75
+(plain variant — not the -C, not the GPS-equipped -G).
 Complete habits, earn XP, watch your blob evolve. Fully local — no license
 key, no cloud dependency, runs standalone on-device.
 
 ## How it works
 
 - **Pet screen** — shows your blob (color/size reflects evolution stage),
-  current XP, mood bar. Tap anywhere to go to the habit list.
-- **Habit screen** — list of habits with checkboxes. Tap one to mark it done
-  for the day and award XP to your pet. Three navigation buttons at the bottom:
-  Back, Workout, and Focus (Pomodoro).
+  current XP, mood bar, and hunger bar. Tap anywhere to go to the habit list.
+- **Habit screen** — list of habits with checkboxes (each row shows its XP
+  value and current streak). Tap one to mark it done for the day and award XP
+  to your pet. Three navigation buttons at the bottom: Back, Workout, and
+  Focus (Pomodoro).
+- **Workout screen** — rep counter with difficulty levels; hitting the target
+  feeds the pet. Meal size scales with difficulty (Easy +30 / Medium +55 /
+  Hard +90 hunger, with matching mood boosts).
+- **Hunger & death** — hunger drains continuously (~2/hour, ≈48/day), so
+  roughly one Medium workout per day keeps the pet fed. At hunger 0, one more
+  unfed day kills the pet (mood locked to 0, "DEAD" indicator). Low hunger
+  also hard-caps mood.
+- **XP & streak bonuses** — habit XP scales with the habit's streak: +25% at
+  3 days, +50% at 7, +75% at 14, +100% at 30. Completing the last habit of
+  the day pays a "perfect day" bonus (10 + 5×habit count XP). Level L costs
+  50·L+50 XP (level 1 = 100 XP, each level 50 XP more), and every level adds
+  a companion dot orbiting the blob.
 - **Pomodoro screen** — a ring-shaped countdown on the round display: 25 min
   focus block / 5 min break, cycling up to 4 blocks per session. Each completed
   focus block awards +25 XP and shows a popup. If the device is picked up
@@ -42,10 +56,12 @@ key, no cloud dependency, runs standalone on-device.
 ## Setup
 
 1. Get Waveshare's own example project for this board first:
-   `github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.43C` → `02_Example`
-   folder. This has the correct display/touch/QSPI driver init code for
-   this exact board — don't skip this step, the pin mappings are specific
-   to this hardware.
+   `github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.75`. Verify the example
+   folder layout against that repo (it does **not** mirror the 1.43C's
+   numbered 01–05 structure; as of July 2026 the Arduino examples live under
+   `examples/` — checked on GitHub, not locally). This has the correct
+   display/touch/QSPI driver init code for this exact board — don't skip
+   this step, the pin mappings are specific to this hardware.
 2. Copy `pet.h/.cpp`, `habits.h/.cpp`, `storage.h/.cpp`, `ui.h/.cpp` into
    that project's folder.
 3. In their example's `setup()`, keep their display/touch init code, then
@@ -55,7 +71,7 @@ key, no cloud dependency, runs standalone on-device.
    the CyberPet loop logic (daily check + periodic save).
 5. Dependencies: `Preferences` ships built-in with the ESP32 Arduino core
    (nothing to install). If using dashboard sync, install **ArduinoJson**
-   (by Benoit Blanchon) from the Library Manager.
+   (by Benoit Blanchon, **v7+**) from the Library Manager.
 6. Flash via USB-C from Arduino IDE (BOOT+RESET combo if it won't enter
    download mode automatically).
 
@@ -133,24 +149,32 @@ files, re-download:
   original 24 h `millis()` uptime path is used unchanged.
   The last-reset date is persisted to NVS so a reboot after midnight doesn't
   double-fire or skip the reset.
-- **I2C RTC (PCF85063/DS3231) not yet wired in.**  `timekeeping.h` defines a
-  virtual `TimeKeeper` base; adding an RTC backend is a `now()` override with
-  no changes to pet/habits logic.  **Do NOT start RTC driver work until the
-  I2C pads on the 1.43C are verified** — they were unconfirmed at time of
-  writing; check Waveshare's schematic/example before soldering.
+- **Onboard PCF85063 RTC not yet wired in — this is the top pending item**
+  (implementation is a separate task). The 1.75 has a PCF85063 with a
+  32.768 kHz crystal on the ESP32's I2C bus (per Waveshare's docs/schematic —
+  not yet verified on hardware here), so no soldering is needed.
+  `timekeeping.h` defines a virtual `TimeKeeper` base; adding the RTC backend
+  is a `now()` override with no changes to pet/habits logic. Take the I2C
+  init and pin setup from Waveshare's own example for this board — never
+  hardcode GPIO numbers from docs.
 - **LVGL version:** written against **LVGL v8.2+** —
   `lv_obj_set_user_data`/`lv_obj_get_user_data` (used in `ui.cpp`) don't
   exist before 8.2 (assign `obj->user_data` directly on 8.0/8.1). LVGL v9
   needs mechanical renames (`lv_btn_*` → `lv_button_*`, some style-call
-  signatures). Check which version Waveshare's `02_Example` ships before
-  compiling.
-- **ArduinoJson version:** `wifi_sync.cpp` uses v6 syntax
-  (`StaticJsonDocument`). On v7, rename to `JsonDocument` — two lines.
+  signatures). Check which version the 1.75 repo's Arduino example bundles
+  before compiling — its `libraries/lvgl/library.json` says **8.4.0** as of
+  July 2026 (read from GitHub, not compile-verified), while `web_sim` pins
+  8.3.11; reconcile the two at integration time.
+- **ArduinoJson version:** `wifi_sync.cpp` now uses v7 syntax (`JsonDocument`).
+  Install **ArduinoJson v7+** from the Library Manager. On v6, rename
+  `JsonDocument` back to `StaticJsonDocument<N>` / `DynamicJsonDocument(N)`.
 - **Editing habits from the device itself** isn't wired up — only via the
   dashboard (or edit the defaults in `habits.cpp`).
-- **Mood doesn't currently punish evolution** — pet only grows, never
-  regresses. Add a check in `checkEvolution()` if you want low mood to be
-  able to demote a stage.
+- **Mood regression** — ✅ DONE. If `state.mood` drops below 20 (roughly
+  6 consecutive missed-habit days with the default decay of 15/day), the
+  displayed stage is demoted by one. Fully recoverable: raise mood above 20
+  and the stage returns immediately on the next `dailyTick` or XP gain. XP
+  is never touched. Threshold is `MOOD_REGRESSION_THRESHOLD` in `pet.h`.
 
 ## Future additions & development roadmap
 
@@ -160,44 +184,46 @@ for *new stuff*.
 
 ### Quick wins (an evening each)
 
-- **I2C RTC backend** — NTP covers the common WiFi case; for a fully offline
-  wall-clock reset, wire in the onboard PCF85063 (library in Waveshare's
-  `01_Arduino_Libraries`) as a `TimeKeeper` subclass.  Verify the I2C pads
-  on the 1.43C schematic before soldering — they were unconfirmed when
-  `timekeeping.h` was written.
-- **Pet idle animations** — LVGL animations on the blob (slow bounce,
-  occasional blink via a shrinking ellipse overlay, mood-based wobble
-  speed). Pure `lv_anim_t` work, no new hardware.
-- **Streak display on pet screen** — show the longest current streak
-  next to XP; it's already tracked per habit, just not surfaced.
-- **Completion celebration** — brief particle/confetti effect (a few
-  animated circles) when checking off a habit. Cheap dopamine, and it's
-  what makes tamagotchi-style devices feel alive.
+- **I2C RTC backend — top pending item** (implementation is a separate
+  task). NTP covers the common WiFi case; for a fully offline wall-clock
+  reset, wire in the onboard PCF85063 (with 32.768 kHz crystal, on the
+  ESP32's I2C bus per the 1.75 schematic) as a `TimeKeeper` subclass.
+  Driver/library and I2C init come from the 1.75 repo's Arduino examples —
+  verify the folder layout there; don't assume the 1.43C repo's structure.
+- **Pet idle animations** — ✅ DONE, see `ui.cpp`: per-stage bounce/wobble,
+  blink timer, glow pulse, and roaming with squash-and-stretch landing.
+- **Streak display on pet screen** — partially done: each habit-list row now
+  shows its streak (`+Xxp streak N`). Still open: surface the longest
+  current streak on the *pet* screen next to XP.
+- **Completion celebration** — partially done: an XP popup animates on
+  check-off (`showXpPopup` in `ui.cpp`). Still open: a particle/confetti
+  burst (a few animated circles). Cheap dopamine, and it's what makes
+  tamagotchi-style devices feel alive.
 - **Consume dashboard settings** — ✅ DONE (v5). `moodGainPerHabit`,
   `moodDecayPerMiss`, and `dailyResetHour` are now applied from the sync
   response and persisted to NVS.
 
 ### Medium projects
 
-- **Server-ID based sync** — add a `serverId` field to `Habit`, match on
-  that instead of names. Fixes the rename-resets-streak limitation and
-  makes long names a non-issue.
+- **Server-ID based sync** — ✅ DONE (v4). `Habit::serverId` + id-first
+  reconciliation with truncation-aware name fallback; fixed the
+  rename-resets-streak limitation.
 - **Goals on-device** — weekly/monthly goals already exist in the
   dashboard/API; add a third LVGL screen for them with the RTC handling
   week/month rollovers.
-- **Pet regression** — sustained low mood demotes a stage (evolved →
-  creature). Makes neglect actually matter; the check belongs in
-  `checkEvolution()`. Balance carefully — punishing too hard is how habit
-  apps get abandoned.
-- **Completion history + charts** — store dated completions in `store.js`
-  instead of just the latest list, then add a heatmap/streak chart panel
-  to the dashboard.
-- **IMU interactions** — the onboard QMI8658 can detect pickup/shake:
-  wake the screen on pickup, make the blob react (dizzy animation) on
-  shake. Waveshare's examples include the IMU driver.
-- **Battery status** — read charge level via the AXP2101 power chip and
-  show a small indicator; warn when the pet is "getting sleepy" (low
-  battery).
+- **Pet regression** — ✅ DONE. See Known gaps above for details.
+- **Completion history + charts** — ✅ DONE. Dated completions live in the
+  dashboard's `completion_log` table (365-day rolling window); the Overview
+  tab shows a GitHub-style heatmap plus per-habit current/best streaks
+  (`GET /api/history`, `GET /api/history/streaks`).
+- **IMU interactions** — the 1.75's onboard QMI8658 6-axis IMU can detect
+  pickup/shake: wake the screen on pickup, make the blob react (dizzy
+  animation) on shake. No extra hardware needed; take the IMU driver from
+  the 1.75 repo's examples.
+- **Battery status** — the 1.75 has an AXP2101 PMIC and an MX1.25 3.7 V
+  li-ion header with charge/discharge onboard: read charge level via the
+  AXP2101 and show a small indicator; warn when the pet is "getting
+  sleepy" (low battery). No extra hardware needed.
 
 ### Bigger ideas
 
@@ -213,27 +239,33 @@ for *new stuff*.
   (lvgl/lv_web_emscripten) for a browser-based twin of the device screen;
   useful for iterating on UI without reflashing. Note this needs an
   SDL/Emscripten `setup()` path alongside the hardware one.
-- **Voice interaction** — the 1.43C has an audio codec onboard (no mic
-  array — that's the 1.75" board). A small I2S/PDM mic on the exposed
-  header could enable "done!" voice check-offs via wake-word libs like
-  ESP-SR, or by streaming to a local AI stack.
+- **Voice interaction** — the 1.75 has an ES8311 codec, ES7210 echo
+  cancellation, a dual digital mic array, and a speaker onboard (per
+  Waveshare's docs), so no extra hardware is needed for "done!" voice
+  check-offs via wake-word libs like ESP-SR, or for streaming to a local
+  AI stack.
+- **Location-based quests** — **requires the 1.75-G variant** (LC76G GPS
+  module); the plain 1.75 targeted here only has an IPEX antenna holder.
 - **Multiple pets / pet types** — different starting eggs with different
   evolution lines and stage art; store the pet type in `PetState`.
 - **Custom pixel-art sprites** — replace the circle blob with LVGL image
-  assets per stage/mood. LVGL's image converter turns PNGs into C arrays.
+  assets per stage/mood. LVGL's image converter turns PNGs into C arrays;
+  for bigger sprite sets (or audio assets), the 1.75's onboard TF card
+  slot is the natural future storage path.
 - **On-device habit editing** — an LVGL keyboard screen, or the lighter
   path: a serial command interface (`addhabit:Name:XP` over USB).
-- **A `SKILL.md` for Claude** — a project skill file that captures this
+- **A `SKILL.md` for Claude** — ✅ DONE, see `SKILL.md` at the repo root
+  (plus `CLAUDE.md` pointing at it). A project skill file that captures this
   codebase's conventions so future Claude sessions (or Claude Code) stay
-  consistent instead of re-deriving everything. Good things to encode:
+  consistent instead of re-deriving everything. Things it encodes:
   the architecture split (hardware-agnostic logic files vs the two
   board-specific integration points in `CyberPet.ino`); that sync
   reconciliation is name-based and comparisons must stay truncation-aware
-  (`strncmp` at `HABIT_NAME_LEN-1`); the LVGL v8.2+ / ArduinoJson v6
+  (`strncmp` at `HABIT_NAME_LEN-1`); the LVGL v8.2+ / ArduinoJson v7+
   version assumptions; that NVS writes should stay change-guarded; the
   `store.update`/`get` seam on the dashboard as the extension point; and
   the rule that new pet/habit logic stays hardware-agnostic so board swaps
-  (e.g. to the 1.75") remain drop-in. Drop it at the repo root as
+  (e.g. back to the 1.43C) remain drop-in. Drop it at the repo root as
   `SKILL.md`, or under `.claude/skills/cyberpet/SKILL.md` if using Claude
   Code, and Claude reads it before touching the project. Cheapest way to
   keep a long-running hobby project coherent across many sessions.
@@ -243,20 +275,29 @@ for *new stuff*.
 Ways to make the pet react to what your body is doing, not just what you
 tap. All of these feed naturally into the existing XP/mood system.
 
-- **Step counting** — the onboard QMI8658 IMU supports motion detection
-  and step counting, but only if the device is *on you* (pocket/clipped),
-  since a desk-bound pet can't count your steps. Two viable designs:
-  carry mode (battery + a clip case, steps counted on-device, auto-completes
-  a "Move body" habit at a threshold), or phone-as-sensor (your phone counts
-  steps and posts them to the dashboard API, which awards XP on next sync —
-  no hardware changes, an n8n flow or an iOS Shortcut hitting `/api/sync`
-  would do it).
+- **Step counting** — the 1.75's onboard QMI8658 IMU supports motion
+  detection and step counting (no add-on hardware needed), but only if the
+  device is *on you* (pocket/clipped), since a desk-bound pet can't count
+  your steps. Two viable designs: carry mode (a 3.7 V li-ion cell on the
+  onboard MX1.25 header + a clip case, steps counted on-device,
+  auto-completes a "Move body" habit at a threshold), or phone-as-sensor
+  (your phone counts steps and posts them to the dashboard API, which
+  awards XP on next sync — no hardware changes, an n8n flow or an iOS
+  Shortcut hitting `/api/sync` would do it).
 - **Movement / sedentary nudges** — the inverse of step counting and more
   desk-realistic: if the IMU sees zero vibration and no touch input for
   ~an hour while the screen is on, the pet gets visibly restless (droopy
   blob, "I want a walk" bubble) and mood ticks down slightly until it
   detects being picked up or moved. Uses the pickup/shake detection the
-  QMI8658 already does well.
+  onboard QMI8658 already does well — fully supported on the 1.75 with no
+  extra hardware.
+  **Done (UI / inactivity proxy):** `sedentaryCheckCB` polls
+  `lv_disp_get_inactive_time()` every 60 s; after 1 h of no touch input
+  the blob goes heavy-lidded and droopy (`sedentaryActive` flag in
+  `applyMoodExpression()`), a "I want a stretch..." bubble floats up, and
+  mood is knocked −5. Clears automatically within 60 s of the next touch.
+  Wiring real IMU pickup detection replaces the LVGL inactivity proxy and
+  is the next step once the QMI8658 driver is integrated.
 - **Posture reminders** — honest note: the device can't *measure* your
   posture (the IMU senses its own orientation, not your spine). What works
   instead: timed posture check-ins — every N minutes the pet does a
@@ -268,31 +309,49 @@ tap. All of these feed naturally into the existing XP/mood system.
 - **Pomodoro mode** — ✅ DONE, see `ui.cpp`. Ring-shaped countdown on the
   round display, 25 min focus / 5 min break, up to 4 blocks per session,
   +25 XP per completed block with XP popup. IMU guilt-trip on pickup via
-  `pomodoroGuiltTrip()` (red arc flash + "⚠ FOCUS!" for 1.5s). Accessible
-  from the Focus button on the habit screen.
+  `pomodoroGuiltTrip()` (red arc flash + "⚠ FOCUS!" for 1.5s) — the UI hook
+  exists; wiring it to real pickup detection is now onboard-supported via
+  the 1.75's QMI8658. Accessible from the Focus button on the habit screen.
 
-### Porting notes (for future hardware)
+### Porting notes: the 1.43C (the original target board)
 
-The 1.75" AMOLED board (also 466×466, same CO5300/CST9217/QMI8658/
-PCF85063/AXP2101 chips) is a near drop-in: only the display/touch init
-block in `CyberPet.ino` changes, sourced from that board's own example
-project since pin mappings differ. The 1.75 adds a dual mic array +
-echo cancellation (better for voice features) and has a GPS variant
-(1.75-G) that would suit location-based quests. All logic files
-(`pet`, `habits`, `storage`, `wifi_sync`) are hardware-agnostic and
-port unchanged.
+This project originally targeted the Waveshare ESP32-S3-Touch-AMOLED-1.43C
+before being retargeted to the 1.75. Porting back (or maintaining both) is
+still a drop-in: only the display/touch init block in `CyberPet.ino`
+changes, sourced from the 1.43C's own example repo
+(`github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.43C`, `02_Example`
+folder). All logic files (`pet`, `habits`, `storage`, `ui`, `wifi_sync`)
+are hardware-agnostic and port unchanged.
+
+Verified 1.43C facts (from its schematic/docs — kept here so they aren't
+lost):
+
+- Same 466×466 CO5300 QSPI display as the 1.75, so `ui.cpp` and `web_sim`
+  need zero changes.
+- Touch controller is a **CST820** — not the CST9217 an earlier revision of
+  this README claimed.
+- I2C: SDA=GPIO47, SCL=GPIO48, with 4.7K pullups onboard.
+- **No RTC** and no 32 kHz crystal, **no IMU**, **no AXP2101** — the same
+  earlier revision wrongly claimed PCF85063/QMI8658/AXP2101 onboard. On the
+  1.43C, the RTC / IMU / battery-gauge roadmap items all need external
+  hardware.
+- Battery sensing is a ~200K/200K divider into GPIO4 (BAT_ADC), not a PMIC.
+- Dual mic array + ES7210 echo cancellation **is** present.
+- No TF card slot.
 
 ## A note on the Waveshare code's license
 
-The `waveshareteam/ESP32-S3-Touch-AMOLED-1.43C` repo (as of July 2026: 3
-commits, v1.1.0 dated 2026-04-20, folders 01–05 incl. schematics and
-structural designs) has **no LICENSE file**. Waveshare's *other* board repos
-(e.g. the 1.8" AMOLED) are Apache-licensed, but strictly speaking unlicensed
-public code defaults to all-rights-reserved. Using and modifying their
-drivers/examples on their own hardware is clearly the intended use; just
-don't assume you can redistribute their driver code in your own public repo
-without checking with them. Everything in *this* project (pet/habits/
-storage/ui/wifi_sync) is original and yours to license however you want.
+The `waveshareteam/ESP32-S3-Touch-AMOLED-1.75` repo carries an **Apache-2.0
+LICENSE file** (checked on GitHub, July 2026), so using and adapting its
+drivers/examples is straightforward — just keep Apache's license/notice
+requirements if you redistribute their code. For contrast (relevant if you
+port back to the 1.43C): the `ESP32-S3-Touch-AMOLED-1.43C` repo had **no
+LICENSE file** as of July 2026 (3 commits, v1.1.0 dated 2026-04-20, folders
+01–05 incl. schematics and structural designs), and unlicensed public code
+strictly defaults to all-rights-reserved — don't redistribute that board's
+driver code without checking with Waveshare. Everything in *this* project
+(pet/habits/storage/ui/wifi_sync) is original and yours to license however
+you want.
 
 ## Editing default habits
 

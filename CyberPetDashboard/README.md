@@ -37,8 +37,8 @@ docker run -d -p 8090:8080 -v cyberpet-data:/app/data --name cyberpet-dashboard 
    const char* WIFI_PASSWORD = "YourPassword";
    const char* DASHBOARD_URL = "http://192.168.1.50:8090";
    ```
-3. Install the **ArduinoJson** library (by Benoit Blanchon) via Arduino
-   IDE's Library Manager — `wifi_sync.cpp` depends on it.
+3. Install **ArduinoJson v7+** (by Benoit Blanchon) via Arduino IDE's
+   Library Manager — `wifi_sync.cpp` depends on it (`JsonDocument` syntax).
 4. Reflash. On boot the device will connect to WiFi and start syncing every
    60 seconds (adjustable via `SYNC_INTERVAL_MS` in the sketch, or from the
    dashboard's Settings panel once synced state is wired up further).
@@ -54,15 +54,26 @@ network calls — the dashboard becomes optional, not required.
 | POST | `/api/habits` | Add habit `{name, xpValue}` |
 | PATCH | `/api/habits/:id` | Edit habit `{name?, xpValue?}` |
 | DELETE | `/api/habits/:id` | Remove habit (soft delete) |
+| POST | `/api/habits/:id/complete` | Mark habit done today from the dashboard (logs completion, awards XP, bumps `dashXpTotal`) |
 | GET | `/api/goals` | List active goals |
 | POST | `/api/goals` | Add goal `{name, xpValue, period}` |
 | DELETE | `/api/goals/:id` | Remove goal |
+| GET | `/api/quests` | List active quests |
+| POST | `/api/quests` | Add quest `{name, xpValue, description?}` |
+| PATCH | `/api/quests/:id` | Set `{done}` — awards XP on undone → done (monotonic `dashXpTotal`) |
+| DELETE | `/api/quests/:id` | Remove quest (soft delete) |
+| GET / POST / PATCH / DELETE | `/api/todos`, `/api/todos/:id` | Developer TODO panel items `{text, category, done}` |
+| GET / POST | `/api/devnotes` | Free-form dev notes `{text}` |
 | GET | `/api/settings` | Read current settings |
-| POST | `/api/settings` | Update settings (partial) |
+| POST | `/api/settings` | Update settings (partial; whitelisted keys, null/empty dropped) |
 | GET | `/api/pet` | Last-synced pet state |
-| POST | `/api/sync` | Device sync endpoint: accepts `{deviceId, petState, completedHabits: [{id, name}]}` (also legacy `[names]`), returns current habits/goals/settings |
+| POST | `/api/sync` | Device sync endpoint: accepts `{deviceId, petState, completedHabits: [{id, name}]}` (also legacy `[names]`), returns current habits/goals/quests/settings + `dashXpTotal`/`configVersion` |
+| GET | `/api/config-version` | Lightweight `{version, updatedAt}` — polled by the device every 5 s |
+| GET | `/api/events` | SSE stream; emits `config` events on version bumps (dashboard live indicator) |
 | GET | `/api/history` | Completion heatmap for the last N days (default 112, max 365). Query: `?days=N`. Returns `{ heatmap: [{date, count, total, pct}], recent: [...] }` |
 | GET | `/api/history/streaks` | Per-habit current streak, best streak, and last-14-days boolean array. Returns `[{id, name, streak, best, recent: [bool×14]}]` |
+| GET | `/api/export` | Download a JSON backup (pet, settings, habits, goals, quests, completion log) |
+| GET | `/api/storage` | Store file size + rough device-NVS usage estimate |
 
 ## Storage
 
