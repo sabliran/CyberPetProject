@@ -117,6 +117,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   buildHabitScreen();
   buildQuestScreen();
   buildGoalScreen();
+  buildAppsScreen();
   buildWorkoutScreen();
   buildPomodoroScreen();
   sedentaryTimer = lv_timer_create(sedentaryCheckCB, SEDENTARY_CHECK_MS, this);
@@ -1315,6 +1316,97 @@ void PetUI::pomGestureCB(lv_event_t* e) {
   lv_indev_wait_release(lv_indev_get_act());
   if (lv_indev_get_gesture_dir(lv_indev_get_act()) != LV_DIR_TOP) return;
   pomCancelBtnCB(e);
+}
+
+/* ---- apps menu ---------------------------------------------------- */
+
+// Launcher entries. Adding a future app = one row here + one case in
+// appsBtnCB below; the buttons lay themselves out around screen center.
+struct AppEntry {
+  const char* icon;
+  const char* name;
+  uint32_t    color;
+};
+static const AppEntry APP_ENTRIES[] = {
+  { LV_SYMBOL_CHARGE, "workout", 0x3EE8A0 },
+  { LV_SYMBOL_EYE_OPEN, "focus",   0xFF8080 },
+};
+static const int APP_COUNT = sizeof(APP_ENTRIES) / sizeof(APP_ENTRIES[0]);
+
+void PetUI::buildAppsScreen() {
+  appsScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(appsScreen, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_pad_all(appsScreen, 0, 0);
+  lv_obj_clear_flag(appsScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* title = lv_label_create(appsScreen);
+  lv_label_set_text(title, "APPS");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 40);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xA080FF), 0);
+
+  // One big rounded button per app, stacked around screen center.
+  const int btnH = 72, gap = 20, pitch = btnH + gap;
+  for (int i = 0; i < APP_COUNT; i++) {
+    lv_obj_t* btn = lv_btn_create(appsScreen);
+    lv_obj_set_size(btn, 280, btnH);
+    lv_obj_align(btn, LV_ALIGN_CENTER, 0,
+                 i * pitch - ((APP_COUNT - 1) * pitch) / 2);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x10101E), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(btn, 20, 0);
+    lv_obj_set_style_border_width(btn, 2, 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(APP_ENTRIES[i].color), 0);
+    lv_obj_t* lbl = lv_label_create(btn);
+    lv_label_set_text_fmt(lbl, "%s  %s", APP_ENTRIES[i].icon, APP_ENTRIES[i].name);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(APP_ENTRIES[i].color), 0);
+    lv_obj_center(lbl);
+    lv_obj_set_user_data(btn, (void*)(intptr_t)i);
+    lv_obj_add_event_cb(btn, appsBtnCB, LV_EVENT_CLICKED, this);
+  }
+
+  lv_obj_t* hint = lv_label_create(appsScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(appsScreen, appsGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::showAppsMenu() {
+  // Toggle: the same physical button opens and closes the menu.
+  if (lv_scr_act() == appsScreen) {
+    showPetScreen();
+    return;
+  }
+  lv_scr_load_anim(appsScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+void PetUI::appsBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  // Swipes emit a CLICKED on release; same guard as the habit list.
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+  switch (idx) {
+    case 0:
+      self->showWorkoutScreen();
+      break;
+    case 1:
+      self->pomState = POM_IDLE;  // always start fresh, same as the swipe path
+      self->showPomodoroScreen();
+      break;
+    default:
+      break;
+  }
+}
+
+void PetUI::appsGestureCB(lv_event_t* e) {
+  // Opened by a physical button, so there's no "opposite swipe" to mirror:
+  // any swipe direction dismisses back to the pet.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->showPetScreen();
 }
 
 /* ---- workout screen --------------------------------------------- */

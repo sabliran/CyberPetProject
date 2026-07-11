@@ -243,6 +243,25 @@ and never part of the sim build. LVGL is pinned to v8.3.11 in
 `web_sim/CMakeLists.txt`; keep it matching whatever the device build uses.
 Sim shortcuts: `d` = day rollover, `x` = +25 XP, `m` = dev menu,
 `space` = workout rep, `s` = sedentary nudge, `b` = battery cycle (100% → 10% → 60% charging),
-`p` = Pomodoro guilt-trip. Press & hold on the pet screen = manual sync
+`p` = Pomodoro guilt-trip, `a` = apps menu (stands in for the physical
+button). Press & hold on the pet screen = manual sync
 (sim fakes a success after 1.2 s); a quick click on the blob = pat/love
 reaction; mouse-drag = swipe gestures.
+
+## Apps menu
+
+`PetUI::showAppsMenu()` is a launcher screen listing the built-in apps
+(workout, focus, walk) — table-driven via `APP_ENTRIES[]` in `ui.cpp`, so a
+future app is one table row plus one dispatch case in `appsBtnCB`.
+
+The walk app displays steps fed in via `PetUI::setSteps()`; counting lives in
+the board sketch (1.75B: QMI8658 hardware pedometer polled every 2 s, deltas
+accumulated into a `StepState` persisted via `Storage::saveStepState` — the
+raw chip counter resets at power-off). Daily reset compares the RTC calendar
+date stamped into StepState; reaching `WALK_DAILY_GOAL` awards
+`WALK_GOAL_XP` once per day (the `rewarded` flag survives reboots). It toggles: the
+same call closes the menu if it's already showing, and any swipe dismisses
+back to the pet. Board wiring: short press (50 ms–2 s) of BOOT/GPIO0 on both
+boards — on the 1.75B a 2 s+ hold still powers off via the PMU, and on the
+1.43C the `ui.showAppsMenu()` call must stay inside
+`bsp_display_lock`/`unlock`.

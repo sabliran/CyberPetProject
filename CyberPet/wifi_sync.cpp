@@ -85,6 +85,13 @@ void WifiSync::buildSyncRequest(Pet* pet, HabitTracker* tracker, String& out) {
   petObj["hunger"]   = p.hunger;
   petObj["alive"]    = p.alive;
 
+  // Walking analytics: the server keys history by the device's own calendar
+  // date when valid (year >= 2020), else falls back to its own date.
+  JsonObject stepsObj = reqDoc["steps"].to<JsonObject>();
+  stepsObj["today"]     = stepsToday_;
+  stepsObj["year"]      = stepYear_;
+  stepsObj["dayOfYear"] = stepDoy_;
+
   JsonArray completed = reqDoc["completedHabits"].to<JsonArray>();
   for (int i = 0; i < MAX_HABITS; i++) {
     Habit* h = tracker->get(i);

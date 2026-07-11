@@ -86,6 +86,12 @@ public:
   void syncStarted();            // shows spinner overlay (no-op if already shown)
   void syncFinished(bool ok);    // green "synced" / red "offline", then fades out
 
+  // Apps menu: a launcher listing the built-in apps (workout, focus, ...).
+  // The board sketch wires it to a physical button (1.75B: short-press BOOT);
+  // the sim maps it to the 'a' key. Calling it while the menu is already
+  // showing closes it (toggle), so one button both opens and dismisses.
+  void showAppsMenu();
+
   // Register after init(). See PetSoundEvent above.
   void setSoundCallback(PetSoundCB cb) { soundCB = cb; }
 
@@ -138,6 +144,9 @@ private:
   GoalInfo   goals[MAX_GOALS];
   int        goalCount;
 
+  // apps menu screen
+  lv_obj_t*  appsScreen;
+
   // manual-sync state (press & hold + overlay)
   uint32_t   lastGestureMs;  // swipes also emit clicks on release; used to filter them out
   uint32_t   lastPatMs;      // debounce for the blob pat reaction
@@ -189,6 +198,7 @@ private:
   void refreshQuestScreen();
   void buildGoalScreen();
   void refreshGoalScreen();
+  void buildAppsScreen();
   void buildWorkoutScreen();
   void buildPomodoroScreen();
   void refreshPomodoroRing();
@@ -221,6 +231,8 @@ private:
   static void goalGestureCB(lv_event_t* e);
   static void workoutGestureCB(lv_event_t* e);
   static void pomGestureCB(lv_event_t* e);
+  static void appsGestureCB(lv_event_t* e);
+  static void appsBtnCB(lv_event_t* e);
   static void petLongPressCB(lv_event_t* e);    // press & hold = manual sync
   static void blobPatCB(lv_event_t* e);         // quick tap on the blob = love reaction
   static void pomTapCB(lv_event_t* e);          // double-tap = play/pause on focus screen

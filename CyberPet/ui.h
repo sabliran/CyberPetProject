@@ -35,6 +35,14 @@ struct GoalInfo {
   char period[GOAL_PERIOD_LEN];  // "daily" / "weekly" / ... (free-form from dashboard)
 };
 
+// Walk app tuning. Steps come from the board's pedometer (1.75B: QMI8658
+// hardware step counter); the sketch feeds them in via setSteps(). The UI
+// only displays — daily reset, persistence and the goal XP award live in the
+// sketch so screenless/sensorless builds pay nothing.
+#define WALK_DAILY_GOAL 6000
+#define WALK_STRIDE_CM  70    // rough stride for the distance estimate
+#define WALK_GOAL_XP    25    // one-time daily award when the goal is reached
+
 // Sound events. The UI layer only *emits* these; the board sketch registers a
 // player via setSoundCallback() (speaker/codec wiring is board-specific).
 // Unset callback = silent, so the sim and speakerless boards need nothing.
@@ -85,6 +93,19 @@ public:
   bool consumeSyncRequest();
   void syncStarted();            // shows spinner overlay (no-op if already shown)
   void syncFinished(bool ok);    // green "synced" / red "offline", then fades out
+
+  // Walk app: shows today's steps against WALK_DAILY_GOAL. setSteps() is
+  // cheap when the walk screen isn't showing (stores + returns), so the
+  // sketch can call it from every pedometer poll. sensorOk=false renders
+  // the "no motion sensor" state instead of a count.
+  void showWalkScreen();
+  void setSteps(uint32_t stepsToday, bool sensorOk);
+
+  // Apps menu: a launcher listing the built-in apps (workout, focus, ...).
+  // The board sketch wires it to a physical button (1.75B: short-press BOOT);
+  // the sim maps it to the 'a' key. Calling it while the menu is already
+  // showing closes it (toggle), so one button both opens and dismisses.
+  void showAppsMenu();
 
   // Register after init(). See PetSoundEvent above.
   void setSoundCallback(PetSoundCB cb) { soundCB = cb; }
@@ -138,6 +159,19 @@ private:
   GoalInfo   goals[MAX_GOALS];
   int        goalCount;
 
+  // apps menu screen
+  lv_obj_t*  appsScreen;
+
+  // walk screen widgets + state
+  lv_obj_t*  walkScreen;
+  lv_obj_t*  walkArc;
+  lv_obj_t*  walkStepLabel;
+  lv_obj_t*  walkCaptionLabel;
+  lv_obj_t*  walkDistLabel;
+  lv_obj_t*  walkGoalLabel;
+  uint32_t   walkSteps;
+  bool       walkSensorOk;
+
   // manual-sync state (press & hold + overlay)
   uint32_t   lastGestureMs;  // swipes also emit clicks on release; used to filter them out
   uint32_t   lastPatMs;      // debounce for the blob pat reaction
@@ -189,6 +223,9 @@ private:
   void refreshQuestScreen();
   void buildGoalScreen();
   void refreshGoalScreen();
+  void buildAppsScreen();
+  void buildWalkScreen();
+  void refreshWalkScreen();
   void buildWorkoutScreen();
   void buildPomodoroScreen();
   void refreshPomodoroRing();
@@ -221,6 +258,9 @@ private:
   static void goalGestureCB(lv_event_t* e);
   static void workoutGestureCB(lv_event_t* e);
   static void pomGestureCB(lv_event_t* e);
+  static void appsGestureCB(lv_event_t* e);
+  static void appsBtnCB(lv_event_t* e);
+  static void walkGestureCB(lv_event_t* e);
   static void petLongPressCB(lv_event_t* e);    // press & hold = manual sync
   static void blobPatCB(lv_event_t* e);         // quick tap on the blob = love reaction
   static void pomTapCB(lv_event_t* e);          // double-tap = play/pause on focus screen

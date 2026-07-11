@@ -295,6 +295,9 @@ static void handle_sdl_events() {
           case SDLK_p:
             ui.pomodoroGuiltTrip();
             break;
+          case SDLK_a:
+            ui.showAppsMenu();  // stands in for the board's physical button
+            break;
         }
         break;
     }

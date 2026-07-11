@@ -556,6 +556,58 @@ document.querySelectorAll('.history-range-btn').forEach(btn => {
   });
 });
 
+// ---- Walking analytics -----------------------------------------------------
+
+function walkDateKey(d) { return d.toISOString().slice(0, 10); }
+
+async function loadWalking() {
+  const { goal, strideCm, history } = await api('/steps');
+  const now = new Date();
+  const todaySteps = history[walkDateKey(now)] || 0;
+
+  document.getElementById('walkTodaySteps').textContent = todaySteps.toLocaleString();
+  document.getElementById('walkTodayGoal').textContent =
+    `/ ${goal.toLocaleString()} steps  ·  ${(todaySteps * strideCm / 100000).toFixed(2)} km`;
+  const fill = document.getElementById('walkBarFill');
+  fill.style.width = `${Math.min(100, todaySteps / goal * 100)}%`;
+  fill.classList.toggle('walk-bar__fill--goal', todaySteps >= goal);
+
+  // Last 14 days, oldest first.
+  const chart = document.getElementById('walkChart');
+  chart.innerHTML = '';
+  let maxSteps = goal;  // scale never below the goal line so bars stay honest
+  const days = [];
+  for (let i = 13; i >= 0; i--) {
+    const key = walkDateKey(new Date(now.getTime() - i * 864e5));
+    const steps = history[key] || 0;
+    days.push({ key, steps });
+    if (steps > maxSteps) maxSteps = steps;
+  }
+  for (const day of days) {
+    const bar = document.createElement('div');
+    bar.className = 'walk-col';
+    const pct = Math.max(2, day.steps / maxSteps * 100);
+    bar.innerHTML = `<div class="walk-col__bar${day.steps >= goal ? ' walk-col__bar--goal' : ''}${day.key === walkDateKey(now) ? ' walk-col__bar--today' : ''}" style="height:${pct}%"></div>`;
+    bar.title = `${day.key}: ${day.steps.toLocaleString()} steps`;
+    chart.appendChild(bar);
+  }
+
+  // Stats: this week's distance, best day on record, goal days last 30.
+  let weekSteps = 0;
+  for (const day of days.slice(-7)) weekSteps += day.steps;
+  let best = { key: null, steps: 0 };
+  let goalDays30 = 0;
+  const cutoff30 = walkDateKey(new Date(now.getTime() - 29 * 864e5));
+  for (const [key, steps] of Object.entries(history)) {
+    if (steps > best.steps) best = { key, steps };
+    if (key >= cutoff30 && steps >= goal) goalDays30++;
+  }
+  document.getElementById('walkStats').innerHTML = `
+    <span><b>${(weekSteps * strideCm / 100000).toFixed(1)} km</b> last 7 days</span>
+    <span><b>${best.steps.toLocaleString()}</b> best day${best.key ? ` (${best.key})` : ''}</span>
+    <span><b>${goalDays30}</b> goal day${goalDays30 === 1 ? '' : 's'} last 30</span>`;
+}
+
 // ---- Config version + SSE push indicator ----------------------------------
 
 function updateConfigDisplay(version, updatedAt) {
@@ -591,8 +643,11 @@ function flashPushed() {
 // ---- Boot -----------------------------------------------------------------
 
 async function refreshAll() {
-  await Promise.all([loadPet(), loadHabits(), loadGoals(), loadQuests(), loadSettings(), loadHistory()]);
+  await Promise.all([loadPet(), loadHabits(), loadGoals(), loadQuests(), loadSettings(), loadHistory(), loadWalking()]);
 }
 
 refreshAll();
 setInterval(loadPet, 15000);
+// Steps arrive with every device sync (10 s on USB), so keep the walking
+// panel fresh on the same cadence as the pet card.
+setInterval(loadWalking, 15000);

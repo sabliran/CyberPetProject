@@ -109,6 +109,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   pomState = POM_IDLE; pomLastTapMs = 0; pomRunning = false;
   pomBlocks = 0; pomStartMs = 0; pomElapsedMs = 0; pomClockTimer = nullptr;
   questCount = 0; goalCount = 0;
+  walkSteps = 0; walkSensorOk = false;
   lastGestureMs = 0; lastPatMs = 0; syncRequested = false;
   syncOverlay = nullptr; syncLabel = nullptr; syncSpinner = nullptr;
   syncTimeoutTimer = nullptr;
@@ -117,6 +118,8 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   buildHabitScreen();
   buildQuestScreen();
   buildGoalScreen();
+  buildAppsScreen();
+  buildWalkScreen();
   buildWorkoutScreen();
   buildPomodoroScreen();
   sedentaryTimer = lv_timer_create(sedentaryCheckCB, SEDENTARY_CHECK_MS, this);
@@ -1315,6 +1318,209 @@ void PetUI::pomGestureCB(lv_event_t* e) {
   lv_indev_wait_release(lv_indev_get_act());
   if (lv_indev_get_gesture_dir(lv_indev_get_act()) != LV_DIR_TOP) return;
   pomCancelBtnCB(e);
+}
+
+/* ---- apps menu ---------------------------------------------------- */
+
+// Launcher entries. Adding a future app = one row here + one case in
+// appsBtnCB below; the buttons lay themselves out around screen center.
+struct AppEntry {
+  const char* icon;
+  const char* name;
+  uint32_t    color;
+};
+static const AppEntry APP_ENTRIES[] = {
+  { LV_SYMBOL_CHARGE,   "workout", 0x3EE8A0 },
+  { LV_SYMBOL_EYE_OPEN, "focus",   0xFF8080 },
+  { LV_SYMBOL_GPS,      "walk",    0x50A8E8 },
+};
+static const int APP_COUNT = sizeof(APP_ENTRIES) / sizeof(APP_ENTRIES[0]);
+
+void PetUI::buildAppsScreen() {
+  appsScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(appsScreen, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_pad_all(appsScreen, 0, 0);
+  lv_obj_clear_flag(appsScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* title = lv_label_create(appsScreen);
+  lv_label_set_text(title, "APPS");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 40);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xA080FF), 0);
+
+  // One big rounded button per app, stacked around screen center.
+  const int btnH = 72, gap = 20, pitch = btnH + gap;
+  for (int i = 0; i < APP_COUNT; i++) {
+    lv_obj_t* btn = lv_btn_create(appsScreen);
+    lv_obj_set_size(btn, 280, btnH);
+    lv_obj_align(btn, LV_ALIGN_CENTER, 0,
+                 i * pitch - ((APP_COUNT - 1) * pitch) / 2);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x10101E), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(btn, 20, 0);
+    lv_obj_set_style_border_width(btn, 2, 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(APP_ENTRIES[i].color), 0);
+    lv_obj_t* lbl = lv_label_create(btn);
+    lv_label_set_text_fmt(lbl, "%s  %s", APP_ENTRIES[i].icon, APP_ENTRIES[i].name);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(APP_ENTRIES[i].color), 0);
+    lv_obj_center(lbl);
+    lv_obj_set_user_data(btn, (void*)(intptr_t)i);
+    lv_obj_add_event_cb(btn, appsBtnCB, LV_EVENT_CLICKED, this);
+  }
+
+  lv_obj_t* hint = lv_label_create(appsScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(appsScreen, appsGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::showAppsMenu() {
+  // Toggle: the same physical button opens and closes the menu.
+  if (lv_scr_act() == appsScreen) {
+    showPetScreen();
+    return;
+  }
+  lv_scr_load_anim(appsScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+void PetUI::appsBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  // Swipes emit a CLICKED on release; same guard as the habit list.
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+  switch (idx) {
+    case 0:
+      self->showWorkoutScreen();
+      break;
+    case 1:
+      self->pomState = POM_IDLE;  // always start fresh, same as the swipe path
+      self->showPomodoroScreen();
+      break;
+    case 2:
+      self->showWalkScreen();
+      break;
+    default:
+      break;
+  }
+}
+
+void PetUI::appsGestureCB(lv_event_t* e) {
+  // Opened by a physical button, so there's no "opposite swipe" to mirror:
+  // any swipe direction dismisses back to the pet.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->showPetScreen();
+}
+
+/* ---- walk screen -------------------------------------------------- */
+
+void PetUI::buildWalkScreen() {
+  walkScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(walkScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(walkScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* title = lv_label_create(walkScreen);
+  lv_label_set_text(title, "WALK");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 18);
+  lv_obj_set_style_text_color(title, lv_color_hex(0x204A68), 0);
+
+  // Progress ring toward WALK_DAILY_GOAL, same construction as the focus ring.
+  walkArc = lv_arc_create(walkScreen);
+  lv_obj_set_size(walkArc, 320, 320);
+  lv_obj_align(walkArc, LV_ALIGN_CENTER, 0, 0);
+  lv_arc_set_rotation(walkArc, 270);       // visual start at 12 o'clock
+  lv_arc_set_bg_angles(walkArc, 0, 359);   // full circle track (359° avoids wrap glitch)
+  lv_arc_set_range(walkArc, 0, WALK_DAILY_GOAL);
+  lv_arc_set_value(walkArc, 0);
+
+  lv_obj_set_style_arc_color(walkArc, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
+  lv_obj_set_style_arc_width(walkArc, 18, LV_PART_MAIN);
+  lv_obj_set_style_arc_color(walkArc, lv_color_hex(0x50A8E8), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(walkArc, 18, LV_PART_INDICATOR);
+  lv_obj_set_style_opa(walkArc, LV_OPA_TRANSP, LV_PART_KNOB);
+  lv_obj_set_style_bg_opa(walkArc, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(walkArc, LV_OBJ_FLAG_CLICKABLE);
+
+  walkStepLabel = lv_label_create(walkScreen);
+  lv_label_set_text(walkStepLabel, "0");
+  lv_obj_set_style_text_font(walkStepLabel, &lv_font_montserrat_32, 0);
+  lv_obj_set_style_text_color(walkStepLabel, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(walkStepLabel, LV_ALIGN_CENTER, 0, -34);
+
+  walkCaptionLabel = lv_label_create(walkScreen);
+  lv_label_set_text(walkCaptionLabel, "steps");
+  lv_obj_set_style_text_color(walkCaptionLabel, lv_color_hex(0x2A4A68), 0);
+  lv_obj_align(walkCaptionLabel, LV_ALIGN_CENTER, 0, 2);
+
+  walkDistLabel = lv_label_create(walkScreen);
+  lv_label_set_text(walkDistLabel, "0.00 km");
+  lv_obj_set_style_text_color(walkDistLabel, lv_color_hex(0x50A8E8), 0);
+  lv_obj_align(walkDistLabel, LV_ALIGN_CENTER, 0, 40);
+
+  walkGoalLabel = lv_label_create(walkScreen);
+  lv_label_set_text_fmt(walkGoalLabel, "goal %d", WALK_DAILY_GOAL);
+  lv_obj_set_style_text_color(walkGoalLabel, lv_color_hex(0x2A4A68), 0);
+  lv_obj_align(walkGoalLabel, LV_ALIGN_CENTER, 0, 74);
+
+  lv_obj_t* hint = lv_label_create(walkScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(walkScreen, walkGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::refreshWalkScreen() {
+  if (!walkSensorOk) {
+    lv_label_set_text(walkStepLabel, "--");
+    lv_label_set_text(walkCaptionLabel, "no motion sensor");
+    lv_label_set_text(walkDistLabel, "");
+    lv_arc_set_value(walkArc, 0);
+    return;
+  }
+  lv_label_set_text_fmt(walkStepLabel, "%u", (unsigned)walkSteps);
+  lv_label_set_text(walkCaptionLabel, "steps");
+  // steps × stride, shown in km with two decimals — integer math only.
+  uint32_t meters = walkSteps * WALK_STRIDE_CM / 100;
+  lv_label_set_text_fmt(walkDistLabel, "%u.%02u km",
+                        (unsigned)(meters / 1000), (unsigned)(meters % 1000 / 10));
+  uint32_t v = walkSteps > WALK_DAILY_GOAL ? WALK_DAILY_GOAL : walkSteps;
+  lv_arc_set_value(walkArc, v);
+  if (walkSteps >= WALK_DAILY_GOAL) {
+    // Goal day: ring and count go green, goal line celebrates.
+    lv_obj_set_style_arc_color(walkArc, lv_color_hex(0x3EE8A0), LV_PART_INDICATOR);
+    lv_obj_set_style_text_color(walkStepLabel, lv_color_hex(0x3EE8A0), 0);
+    lv_label_set_text_fmt(walkGoalLabel, "goal reached!  +%d xp", WALK_GOAL_XP);
+    lv_obj_set_style_text_color(walkGoalLabel, lv_color_hex(0x3EE8A0), 0);
+  } else {
+    lv_obj_set_style_arc_color(walkArc, lv_color_hex(0x50A8E8), LV_PART_INDICATOR);
+    lv_obj_set_style_text_color(walkStepLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_label_set_text_fmt(walkGoalLabel, "goal %d", WALK_DAILY_GOAL);
+    lv_obj_set_style_text_color(walkGoalLabel, lv_color_hex(0x2A4A68), 0);
+  }
+}
+
+void PetUI::showWalkScreen() {
+  refreshWalkScreen();
+  lv_scr_load_anim(walkScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+void PetUI::setSteps(uint32_t stepsToday, bool sensorOk) {
+  walkSteps    = stepsToday;
+  walkSensorOk = sensorOk;
+  if (lv_scr_act() == walkScreen) refreshWalkScreen();
+}
+
+void PetUI::walkGestureCB(lv_event_t* e) {
+  // Same dismissal as the apps menu: any swipe goes back to the pet.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->showPetScreen();
 }
 
 /* ---- workout screen --------------------------------------------- */

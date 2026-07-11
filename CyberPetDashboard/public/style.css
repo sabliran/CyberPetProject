@@ -578,3 +578,75 @@ body {
   cursor: pointer;
 }
 .danger-btn:hover { background: rgba(232, 96, 96, 0.18); border-color: #E86060; }
+
+/* ---- Walking analytics panel ---------------------------------------- */
+
+.walk-today__nums {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.walk-today__steps {
+  font-size: 28px;
+  font-weight: 700;
+}
+.walk-today__goal {
+  color: var(--muted);
+  font-size: 13px;
+}
+.walk-bar {
+  height: 8px;
+  background: var(--panel-2);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+.walk-bar__fill {
+  height: 100%;
+  width: 0;
+  background: var(--creature);
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+.walk-bar__fill--goal {
+  background: var(--blob);
+}
+.walk-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 90px;
+  margin-bottom: 12px;
+}
+.walk-col {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+.walk-col__bar {
+  width: 100%;
+  background: var(--creature);
+  opacity: 0.55;
+  border-radius: 3px 3px 0 0;
+  min-height: 2px;
+}
+.walk-col__bar--goal {
+  background: var(--blob);
+  opacity: 0.8;
+}
+.walk-col__bar--today {
+  opacity: 1;
+}
+.walk-stats {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 13px;
+}
+.walk-stats b {
+  color: var(--text);
+  font-weight: 600;
+}

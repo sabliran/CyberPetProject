@@ -128,3 +128,16 @@ void Storage::saveXpResetToken(int token) {
 int Storage::loadXpResetToken() {
   return prefs.getInt("xp_reset_tok", 0);
 }
+
+void Storage::saveStepState(const StepState& s) {
+  StepState cur = loadStepState();
+  if (memcmp(&cur, &s, sizeof(StepState)) == 0) return;  // skip no-op flash writes
+  prefs.putBytes("steps", &s, sizeof(StepState));
+}
+
+StepState Storage::loadStepState() {
+  StepState s = {};
+  size_t len = prefs.getBytesLength("steps");
+  if (len == sizeof(StepState)) prefs.getBytes("steps", &s, sizeof(StepState));
+  return s;
+}

@@ -73,6 +73,9 @@ void setup() {
   // After this call lv_timer_handler() runs in task "LVGL" — do NOT call it here.
   bsp_broolesia_display_init();  // calls bsp_batt_init() internally
 
+  // BOOT button (GPIO0): short press opens the apps menu — see loop().
+  pinMode(0, INPUT_PULLUP);
+
   storage.begin();
 
   PetState savedPet = storage.loadPet();
@@ -285,6 +288,25 @@ void loop() {
       lastHeapLog = millis();
       Serial.printf("heap: free %u, min-ever %u\n",
                     (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
+    }
+  }
+
+  // ── BOOT button: short press = apps menu ──────────────────────────────────
+  // Runtime GPIO0 is a free input (its strapping role only matters at reset).
+  // No PMU on this board, so unlike the 1.75B there's no hold-to-power-off.
+  {
+    static uint32_t bootHeldSince = 0;
+    if (digitalRead(0) == LOW) {
+      if (bootHeldSince == 0) bootHeldSince = millis();
+    } else if (bootHeldSince != 0) {
+      uint32_t held = millis() - bootHeldSince;
+      bootHeldSince = 0;
+      if (held >= 50 && held < 2000) {  // 50 ms floor debounces contact bounce
+        if (bsp_display_lock(-1) == ESP_OK) {
+          ui.showAppsMenu();
+          bsp_display_unlock();
+        }
+      }
     }
   }
 

@@ -67,7 +67,18 @@ public:
   // and calls pet->resetProgress() exactly once.
   int getPetResetToken() const { return petResetToken; }
 
+  // Walk app: today's step count + the device-local calendar date it belongs
+  // to (year 0 = clock not valid yet). Included in every sync request so the
+  // dashboard can accumulate per-day walking history. Call whenever the
+  // count changes; cheap (just stores members).
+  void setStepInfo(uint32_t stepsToday, int year, int dayOfYear) {
+    stepsToday_ = stepsToday; stepYear_ = year; stepDoy_ = dayOfYear;
+  }
+
 private:
+  uint32_t  stepsToday_ = 0;
+  int       stepYear_   = 0;
+  int       stepDoy_    = 0;
   QuestInfo quests[MAX_QUESTS];
   int       questCount = 0;
   GoalInfo  goals[MAX_GOALS];

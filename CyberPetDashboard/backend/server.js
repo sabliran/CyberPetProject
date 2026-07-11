@@ -433,8 +433,13 @@ app.post('/api/pet/reset', (req, res) => {
 
 // ---------- Device sync ----------------------------------------------------
 
+// Walk app: mirrors WALK_DAILY_GOAL / WALK_STRIDE_CM in the firmware's ui.h.
+const WALK_DAILY_GOAL = 6000;
+const WALK_STRIDE_CM  = 70;
+const STEP_HISTORY_DAYS = 90;
+
 app.post('/api/sync', (req, res) => {
-  const { deviceId, petState, completedHabits } = req.body;
+  const { deviceId, petState, completedHabits, steps } = req.body;
   // Use the server's local date as the canonical completion date.
   // Device and server clocks may disagree slightly around midnight — the server
   // date is always preferred so history records are consistent.
@@ -466,6 +471,21 @@ app.post('/api/sync', (req, res) => {
       // the pet-state write and log append are a single atomic DB transaction.
       store.appendCompletions(d, names, todayDate, deviceId || null);
     }
+    // Walking analytics: per-day step history. Keyed by the device's own
+    // calendar date when its clock is valid (the device rolls its counter at
+    // its own midnight); server date otherwise. Steps only grow within a
+    // day, so max() absorbs reboots where the device restores a slightly
+    // stale NVS count.
+    if (steps && typeof steps.today === 'number' && steps.today >= 0) {
+      let key = todayDate;
+      if (steps.year >= 2020 && steps.dayOfYear >= 1 && steps.dayOfYear <= 366) {
+        key = new Date(Date.UTC(steps.year, 0, steps.dayOfYear)).toISOString().slice(0, 10);
+      }
+      d.stepHistory = d.stepHistory || {};
+      if (steps.today > (d.stepHistory[key] || 0)) d.stepHistory[key] = steps.today;
+      const cutoff = new Date(Date.now() - STEP_HISTORY_DAYS * 864e5).toISOString().slice(0, 10);
+      for (const k of Object.keys(d.stepHistory)) if (k < cutoff) delete d.stepHistory[k];
+    }
   });
   res.json({
     habits:        data.habits.filter(h => h.active),
@@ -476,6 +496,16 @@ app.post('/api/sync', (req, res) => {
     dashXpTotal:   data.dashXpTotal   || 0,
     petResetToken: data.petResetToken || 0,
     configVersion: data.configVersion || 1
+  });
+});
+
+// Walking analytics for the dashboard panel.
+app.get('/api/steps', (req, res) => {
+  const d = store.get();
+  res.json({
+    goal:     WALK_DAILY_GOAL,
+    strideCm: WALK_STRIDE_CM,
+    history:  d.stepHistory || {},
   });
 });
 

@@ -4,6 +4,19 @@
 #include "habits.h"
 #include "ui.h"   // QuestInfo / GoalInfo (dashboard-owned lists, cached for reboot)
 
+// Daily step-counter state (walk app). The hardware pedometer count resets at
+// power-off, so the sketch accumulates into `steps` and persists it here;
+// year/dayOfYear stamp which wall date the count belongs to (midnight
+// rollover), and `rewarded` stops the daily goal XP from double-awarding
+// across reboots. Zero-init (= {}) matters: the change-guard memcmp in
+// saveStepState compares padding bytes too.
+struct StepState {
+  int      year;       // 0 = never stamped (count predates first valid clock)
+  int      dayOfYear;
+  uint32_t steps;
+  bool     rewarded;
+};
+
 // Wraps ESP32 NVS flash storage so pet + habit state survives reboots/power loss.
 class Storage {
 public:
@@ -37,6 +50,11 @@ public:
   // Last-applied dashboard XP-reset token (monotonic; see WifiSync).
   void saveXpResetToken(int token);
   int  loadXpResetToken();
+
+  // Walk app daily steps (change-guarded like quests/goals; the sketch polls
+  // the pedometer every couple of seconds but only persists on change).
+  void saveStepState(const StepState& s);
+  StepState loadStepState();
 
 private:
   Preferences prefs;
