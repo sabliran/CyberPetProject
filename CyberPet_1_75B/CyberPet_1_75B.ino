@@ -43,9 +43,9 @@ const char* WIFI_PASSWORD = "REDACTED_WIFI_PASSWORD";
 // valid when the host's DHCP address changes.
 const char* DASHBOARD_URL = "http://omarchy.local:8090";
 
-// POSIX TZ string.  "UTC0" fires daily reset at UTC midnight.
-// Example: "CET-1CEST,M3.5.0,M10.5.0/3" for Central Europe.
-const char* TIMEZONE = "UTC0";
+// POSIX TZ string — Europe/Athens (EET, with EU DST rules). Keeps the
+// pet-screen clock, daily resets and the RTC stamp all in local time.
+const char* TIMEZONE = "EET-2EEST,M3.5.0/3,M10.5.0/4";
 
 // ── Board drivers (from Waveshare's 1.75 example 06) ────────────────────────
 static Arduino_DataBus* bus = new Arduino_ESP32QSPI(
@@ -79,6 +79,8 @@ static bool     swAbove      = false; // hysteresis state
 static uint32_t swLastStepMs = 0;
 static uint32_t swLastSample = 0;
 
+extern PetUI ui;  // defined below with the other globals; the swing detector needs it
+
 static void swStepSample() {
   uint32_t nowMs = millis();
   if (nowMs - swLastSample < 15) return;   // ~66 Hz effective sampling
@@ -92,16 +94,70 @@ static void swStepSample() {
   swFilt     = 0.70f * swFilt + 0.30f * (mag - swBaseline);
 
   // Rising edge through +60 mg = step candidate; must fall below +20 mg
-  // before the next one counts (hysteresis). Cadence gate: steps closer
-  // than 250 ms apart are jitter, not walking.
+  // before the next one counts (hysteresis). Cadence gates: candidates
+  // closer than 250 ms apart are jitter, and counting only begins after
+  // SW_ENTRY_STEPS consecutive candidates at walking cadence — one-off
+  // bumps (picking the device up, desk knocks) never reach the total.
+  // Once walking is established the warm-up burst is credited
+  // retroactively and every step counts live; a gap longer than
+  // SW_CADENCE_MS ends the walk and re-arms the entry filter.
+  static const uint32_t SW_ENTRY_STEPS = 10;
+  static const uint32_t SW_CADENCE_MS  = 2500;
+  static bool     swWalking = false;
+  static uint32_t swBurst   = 0;
+
   if (!swAbove && swFilt > 0.06f) {
     swAbove = true;
     if (nowMs - swLastStepMs > 250) {
-      swSteps++;
+      if (nowMs - swLastStepMs > SW_CADENCE_MS) { swWalking = false; swBurst = 0; }
+      if (swWalking) {
+        swSteps++;
+      } else if (++swBurst >= SW_ENTRY_STEPS) {
+        swWalking = true;
+        swSteps += swBurst;   // credit the warm-up steps retroactively
+        swBurst = 0;
+      }
       swLastStepMs = nowMs;
     }
   } else if (swAbove && swFilt < 0.02f) {
     swAbove = false;
+  }
+
+  // Wide-swing rep detector (back-workout app): a rep = raw |a| spiking
+  // past the trigger and settling back under the re-arm level. Tuned on
+  // user data: 1.7 g caught only 4 of 12 real rows — most swing peaks sit
+  // lower, so trigger at 1.35 g (still ~9× walking's ~±150 mg deviations).
+  // Only armed while the back screen is in a running session.
+  // Back-workout rep detector: calm-gated spike counting. A rep counts the
+  // moment |a| crosses the trigger, but only if the device first spent
+  // >= 350 ms continuously below the re-arm level ("calm"). Inside a rep
+  // the pull and the return are one continuous motion with no calm stretch
+  // between them, so they can't double-count — which pure time refractories
+  // couldn't guarantee (a slow rep outlasts any refractory: 20 reps counted
+  // 25 at 900 ms). Between reps the hand rests on the floor: always calm.
+  static const float    SWING_TRIGGER_G = 1.35f;
+  static const float    SWING_REARM_G   = 1.10f;
+  static const uint32_t CALM_MS         = 350;
+  static uint32_t quietSince = 0;      // start of current below-rearm stretch (0 = moving)
+  static bool     armedByCalm = false;
+  // Accuracy note (July 2026, tuned on captured signal data): ~±15% —
+  // 20 real reps count 22-23. The user's real sets mix ~0.9 s and ~2 s rep
+  // spacing at full swing strength, so no timing rule can separate the few
+  // phantom triggers from genuine fast reps. Accepted as good enough.
+  if (ui.isBackRunning()) {
+    if (mag < SWING_REARM_G) {
+      if (quietSince == 0) quietSince = nowMs;
+      if (nowMs - quietSince >= CALM_MS) armedByCalm = true;
+    } else {
+      quietSince = 0;
+      if (armedByCalm && mag > SWING_TRIGGER_G) {
+        armedByCalm = false;   // consumed; re-arms only after the next calm stretch
+        ui.addBackRep();
+      }
+    }
+  } else {
+    quietSince = 0;
+    armedByCalm = false;
   }
 }
 
@@ -249,6 +305,30 @@ RtcTimeKeeper timeKeeper;   // PCF85063 via Wire (started in setup)
 static int  lastResetYear = -1;
 static int  lastResetDOY  = -1;
 static bool ntpEnabled    = false;
+
+// Back-workout app: lifetime completed sessions, NVS-backed, reported in
+// sync requests so the server can award back-workout trophies.
+static uint32_t backSessions = 0;
+
+static void backDoneCB() {
+  backSessions++;
+  storage.saveBackSessions(backSessions);
+  wifiSync.setBackSessions(backSessions);
+}
+
+// Sleep app: once-per-day gate, NVS-backed. The UI applies the pet effects
+// and fires this callback; we stamp today's date and persist both.
+static SleepState sleepState;
+
+static void sleepLogCB(int quality) {
+  WallDate today = timeKeeper.now();
+  sleepState.year      = today.valid ? today.year : 0;
+  sleepState.dayOfYear = today.valid ? today.dayOfYear : 0;
+  sleepState.quality   = quality;
+  storage.saveSleepState(sleepState);
+  storage.savePet(pet.getState());
+  wifiSync.setSleepInfo(sleepState.quality, sleepState.year, sleepState.dayOfYear);
+}
 static uint32_t lastDailyCheck = 0;
 static const uint32_t DAY_MS   = 24UL * 60UL * 60UL * 1000UL;
 
@@ -280,10 +360,29 @@ static void dispRounderCB(struct _lv_disp_drv_t* disp_drv, lv_area_t* area) {
   if (area->y2 % 2 == 0) area->y2++;
 }
 
+// Pocket mode (walk app): panel dark + touch ignored so steps count safely
+// in a pocket. Entered via the walk screen's button (pocketModeCB below),
+// exited by a BOOT short press, which lands back on the walk screen.
+static bool pocketMode = false;
+
+static void pocketModeCB() {
+  pocketMode = true;
+  touchPressed = false;   // drop any in-flight touch report
+  gfx->setBrightness(0);  // AMOLED: black pixels + no backlight ≈ display off
+  Serial.println("pocket mode ON (BOOT to wake)");
+}
+
 static void touchReadCB(lv_indev_drv_t* indev, lv_indev_data_t* data) {
   // The CST92xx pulses TP_INT on every scan while touched, including a final
   // report with zero points on release — same read pattern as Waveshare's demo.
   static int16_t tx[5], ty[5];
+  if (pocketMode) {
+    // Fabric brushing the glass must not tap anything. The controller still
+    // scans (its INT keeps firing); we just never report presses to LVGL.
+    touchPressed = false;
+    data->state = LV_INDEV_STATE_RELEASED;
+    return;
+  }
   if (touchPressed) {
     uint8_t touched = touch.getPoint(tx, ty, touch.getSupportTouchPoint());
     if (touched) {
@@ -350,6 +449,25 @@ void setup() {
     power.setPowerKeyPressOffTime(XPOWERS_POWEROFF_4S);
     power.setLongPressPowerOFF();
     power.enableLongPressShutdown();
+    // Charge the RTC backup rail (AXP2101 button-battery charger) so the
+    // PCF85063 can keep wall-clock time through power-off. Harmless if the
+    // board routes nothing to VBACKUP.
+    power.setButtonBatteryChargeVoltage(3300);
+    power.enableButtonBatteryCharge();
+  }
+
+  // One-shot I2C bus scan for the boot log — ground truth on which
+  // peripherals actually ACK. Expected: 0x18 ES8311, 0x34 AXP2101,
+  // 0x51 PCF85063 RTC, 0x5A CST92xx touch, 0x6B QMI8658 IMU.
+  {
+    char line[128];
+    int n = snprintf(line, sizeof(line), "i2c scan:");
+    for (uint8_t a = 1; a < 127; a++) {
+      Wire.beginTransmission(a);
+      if (Wire.endTransmission() == 0 && n < (int)sizeof(line) - 6)
+        n += snprintf(line + n, sizeof(line) - n, " 0x%02X", a);
+    }
+    Serial.println(line);
   }
 
   // BOOT button (GPIO0) doubles as a soft power-off — see loop().
@@ -459,15 +577,23 @@ void setup() {
 
   ui.init(&pet, &habits);
   ui.setSoundCallback(petSoundCB);
+  ui.setSleepCallback(sleepLogCB);
+  ui.setPocketModeCallback(pocketModeCB);
+  ui.setBackDoneCallback(backDoneCB);
+  backSessions = storage.loadBackSessions();
+  wifiSync.setBackSessions(backSessions);
   // Restore the last-synced quest/goal lists from NVS so they don't
   // vanish on reboot while waiting for the next sync.
   {
-    QuestInfo cachedQuests[MAX_QUESTS];
-    GoalInfo  cachedGoals[MAX_GOALS];
+    QuestInfo  cachedQuests[MAX_QUESTS];
+    GoalInfo   cachedGoals[MAX_GOALS];
+    TrophyInfo cachedTrophies[MAX_TROPHIES];
     int nq = storage.loadQuests(cachedQuests);
     int ng = storage.loadGoals(cachedGoals);
+    int nt = storage.loadTrophies(cachedTrophies);
     ui.setQuests(cachedQuests, nq);
     ui.setGoals(cachedGoals, ng);
+    ui.setTrophies(cachedTrophies, nt);
   }
 
   // PCF85063 RTC — Wire is already running (started above for touch/PMU).
@@ -478,6 +604,18 @@ void setup() {
   stepState = storage.loadStepState();
   ui.setSteps(stepState.steps, imuOk);
   wifiSync.setStepInfo(stepState.steps, stepState.year, stepState.dayOfYear);
+
+  // Sleep app: restore the daily gate. Without a valid clock the gate stays
+  // open (year 0 never matches); the loop check below corrects it once the
+  // RTC/NTP comes up.
+  sleepState = storage.loadSleepState();
+  if (sleepState.year > 0)  // year 0 = never logged (or clock was unset)
+    wifiSync.setSleepInfo(sleepState.quality, sleepState.year, sleepState.dayOfYear);
+  if (timeKeeper.hasSync()) {
+    WallDate t = timeKeeper.now();
+    ui.setSleepLogged(t.year == sleepState.year && t.dayOfYear == sleepState.dayOfYear,
+                      sleepState.quality);
+  }
 
   if (strlen(WIFI_SSID) > 0) {
     wifiSync.begin(WIFI_SSID, WIFI_PASSWORD, DASHBOARD_URL);
@@ -503,9 +641,11 @@ static void applySyncResults() {
   ui.refreshHabitScreen();
   ui.setQuests(wifiSync.getQuests(), wifiSync.getQuestCount());
   ui.setGoals(wifiSync.getGoals(), wifiSync.getGoalCount());
+  ui.setTrophies(wifiSync.getTrophies(), wifiSync.getTrophyCount());
   storage.saveHabits(habits);
   storage.saveQuests(wifiSync.getQuests(), wifiSync.getQuestCount());
   storage.saveGoals(wifiSync.getGoals(), wifiSync.getGoalCount());
+  storage.saveTrophies(wifiSync.getTrophies(), wifiSync.getTrophyCount());
 
   // One-shot XP reset from the dashboard (Options tab): applied exactly once
   // per token, remembered across reboots.
@@ -639,10 +779,13 @@ void loop() {
     static uint32_t lastHeapLog = 0;
     if (millis() - lastHeapLog > 30000) {
       lastHeapLog = millis();
-      Serial.printf("heap: free %u, min-ever %u, sw %u hw %u\n",
+      lv_mem_monitor_t m;
+      lv_mem_monitor(&m);
+      Serial.printf("heap: free %u, min-ever %u, sw %u hw %u, lvmem free %u frag %u%%\n",
                     (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
                     (unsigned)swSteps,
-                    (unsigned)(imuOk ? qmi.getPedometerCounter() : 0));
+                    (unsigned)(imuOk ? qmi.getPedometerCounter() : 0),
+                    (unsigned)m.free_size, (unsigned)m.frag_pct);
     }
   }
 
@@ -700,6 +843,31 @@ void loop() {
     }
   }
 
+  // ── Pet-screen clock ──────────────────────────────────────────────────────
+  // Cheap: timeKeeper caches RTC reads for 10 s, and the label only redraws
+  // when the text actually changes (LVGL no-ops identical set_text).
+  {
+    static uint32_t lastClockPush = 0;
+    if (millis() - lastClockPush > 5000 && timeKeeper.hasSync()) {
+      lastClockPush = millis();
+      WallDate t = timeKeeper.now();
+      ui.updateClock(t.hour, t.minute);
+    }
+  }
+
+  // ── Sleep app: keep the once-per-day gate honest ──────────────────────────
+  // Re-arms the question on a new calendar day, and closes the gate if the
+  // clock only became valid after boot (the setup() restore couldn't tell).
+  {
+    static uint32_t lastSleepCheck = 0;
+    if (millis() - lastSleepCheck > 60000 && timeKeeper.hasSync()) {
+      lastSleepCheck = millis();
+      WallDate t = timeKeeper.now();
+      ui.setSleepLogged(t.year == sleepState.year && t.dayOfYear == sleepState.dayOfYear,
+                        sleepState.quality);
+    }
+  }
+
   // ── BOOT button: short press = apps menu, hold 2 s = power off ────────────
   // Runtime GPIO0 is a free input (its strapping role only matters at reset).
   // Power-off saves state, blanks the panel, then tells the PMU to drop all
@@ -722,7 +890,17 @@ void loop() {
       bootHeldSince = 0;
       // 50 ms floor debounces contact bounce; releases past 2 s only happen
       // without a PMU (shutdown never returns), so treat those as holds too.
-      if (held >= 50 && held < 2000) ui.showAppsMenu();
+      if (held >= 50 && held < 2000) {
+        if (pocketMode) {
+          // Wake from pocket mode straight back into the walk screen.
+          pocketMode = false;
+          gfx->setBrightness(200);
+          ui.showWalkScreen();
+          Serial.println("pocket mode OFF");
+        } else {
+          ui.showAppsMenu();
+        }
+      }
     }
   }
 

@@ -80,6 +80,9 @@ public:
   void removeXP(int amount);  // exact inverse of addXP (habit un-done): xp and the +8 mood boost
   void resetProgress();       // dashboard-commanded: xp/stage/dashXpApplied to zero; mood/hunger/streaks untouched
   void dailyTick(bool anyHabitDoneToday);
+  // Sleep app: 0 good, 1 medium, 2 bad. Good/medium lift mood + hunger;
+  // bad costs XP, mood and hunger (see pet.cpp for the exact numbers).
+  void logSleep(int quality);
   // Call when a workout target is met. Restores `hungerAmount` (capped at 100)
   // and boosts mood by `moodBoost` — pass FEED_HUNGER/FEED_MOOD[difficulty].
   // Defaults match the old Medium-ish behaviour for callers that don't care.

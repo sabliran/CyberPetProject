@@ -61,6 +61,10 @@ public:
   const GoalInfo* getGoals() const { return goals; }
   int getGoalCount() const { return goalCount; }
 
+  // Same contract as quests; pass to ui.setTrophies() after each sync.
+  const TrophyInfo* getTrophies() const { return trophies; }
+  int getTrophyCount() const { return trophyCount; }
+
   // One-shot commands ride the sync response as monotonic tokens: the server
   // increments petResetToken when the user presses "Reset XP" on the
   // dashboard; loop() compares against the NVS-persisted last-applied token
@@ -75,14 +79,31 @@ public:
     stepsToday_ = stepsToday; stepYear_ = year; stepDoy_ = dayOfYear;
   }
 
+  // Sleep app: the last logged rating and the calendar date it was logged
+  // on. quality -1 = never logged (omitted from the sync request); the
+  // server only records entries with a valid date stamp.
+  void setSleepInfo(int quality, int year, int dayOfYear) {
+    sleepQuality_ = quality; sleepYear_ = year; sleepDoy_ = dayOfYear;
+  }
+
+  // Back-workout app: lifetime completed sessions (server keeps the max;
+  // used for trophies).
+  void setBackSessions(uint32_t n) { backSessions_ = n; }
+
 private:
   uint32_t  stepsToday_ = 0;
   int       stepYear_   = 0;
   int       stepDoy_    = 0;
+  int       sleepQuality_ = -1;
+  int       sleepYear_    = 0;
+  int       sleepDoy_     = 0;
+  uint32_t  backSessions_ = 0;
   QuestInfo quests[MAX_QUESTS];
   int       questCount = 0;
   GoalInfo  goals[MAX_GOALS];
   int       goalCount = 0;
+  TrophyInfo trophies[MAX_TROPHIES];
+  int       trophyCount = 0;
   int       petResetToken = 0;
 
   // Shared sync plumbing: the request body and response handling are

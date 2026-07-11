@@ -108,8 +108,10 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   workoutElapsedMs = 0; workoutClockTimer = nullptr;
   pomState = POM_IDLE; pomLastTapMs = 0; pomRunning = false;
   pomBlocks = 0; pomStartMs = 0; pomElapsedMs = 0; pomClockTimer = nullptr;
-  questCount = 0; goalCount = 0;
+  questCount = 0; goalCount = 0; trophyCount = 0;
   walkSteps = 0; walkSensorOk = false;
+  backReps = 0; backRunning = false;
+  sleepLogged = false; sleepQuality = 0;
   lastGestureMs = 0; lastPatMs = 0; syncRequested = false;
   syncOverlay = nullptr; syncLabel = nullptr; syncSpinner = nullptr;
   syncTimeoutTimer = nullptr;
@@ -119,6 +121,9 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   buildQuestScreen();
   buildGoalScreen();
   buildAppsScreen();
+  buildBackScreen();
+  buildTrophyScreen();
+  buildSleepScreen();
   buildWalkScreen();
   buildWorkoutScreen();
   buildPomodoroScreen();
@@ -230,6 +235,13 @@ void PetUI::buildPetScreen() {
   lv_obj_align(batteryLabel, LV_ALIGN_BOTTOM_MID, 0, -82);
   lv_obj_set_style_text_color(batteryLabel, lv_color_hex(0x3EE8A0), 0);
   lv_label_set_text(batteryLabel, "");
+
+  // Clock — very top of the round glass, between the clipped corners
+  // (~180 px of visible width up there; "23:59" is well under that).
+  clockLabel = lv_label_create(petScreen);
+  lv_obj_align(clockLabel, LV_ALIGN_TOP_MID, 0, 6);
+  lv_obj_set_style_text_color(clockLabel, lv_color_hex(0x8890A8), 0);
+  lv_label_set_text(clockLabel, "");
   lv_obj_add_flag(batteryLabel, LV_OBJ_FLAG_HIDDEN);
 
   exprTimer  = lv_timer_create(exprTimerCB,  3000, this);
@@ -1329,10 +1341,13 @@ struct AppEntry {
   const char* name;
   uint32_t    color;
 };
+// Workout and focus are deliberately absent: they already have dedicated
+// swipes on the pet screen (up / down); the menu is for apps that don't.
 static const AppEntry APP_ENTRIES[] = {
-  { LV_SYMBOL_CHARGE,   "workout", 0x3EE8A0 },
-  { LV_SYMBOL_EYE_OPEN, "focus",   0xFF8080 },
-  { LV_SYMBOL_GPS,      "walk",    0x50A8E8 },
+  { LV_SYMBOL_GPS,       "walk",     0x50A8E8 },
+  { LV_SYMBOL_REFRESH,   "back",     0xFFA050 },
+  { LV_SYMBOL_EYE_CLOSE, "sleep",    0xA080FF },
+  { LV_SYMBOL_OK,        "trophies", 0xFFD060 },
 };
 static const int APP_COUNT = sizeof(APP_ENTRIES) / sizeof(APP_ENTRIES[0]);
 
@@ -1392,23 +1407,324 @@ void PetUI::appsBtnCB(lv_event_t* e) {
   int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
   switch (idx) {
     case 0:
-      self->showWorkoutScreen();
+      self->showWalkScreen();
       break;
     case 1:
-      self->pomState = POM_IDLE;  // always start fresh, same as the swipe path
-      self->showPomodoroScreen();
+      self->showBackScreen();
       break;
     case 2:
-      self->showWalkScreen();
+      self->showSleepScreen();
+      break;
+    case 3:
+      self->showTrophyScreen();
       break;
     default:
       break;
   }
 }
 
+/* ---- back-workout screen -------------------------------------------- */
+
+void PetUI::buildBackScreen() {
+  backScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(backScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(backScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* title = lv_label_create(backScreen);
+  lv_label_set_text(title, "BACK WORKOUT");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xFFA050), 0);
+
+  backRepLabel = lv_label_create(backScreen);
+  lv_label_set_text(backRepLabel, "0");
+  lv_obj_set_style_text_font(backRepLabel, &lv_font_montserrat_32, 0);
+  lv_obj_set_style_text_color(backRepLabel, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(backRepLabel, LV_ALIGN_CENTER, 0, -40);
+
+  backHintLabel = lv_label_create(backScreen);
+  lv_label_set_text(backHintLabel, "hold the pet, press START");
+  lv_obj_set_style_text_color(backHintLabel, lv_color_hex(0x8A5A28), 0);
+  lv_obj_align(backHintLabel, LV_ALIGN_CENTER, 0, 8);
+
+  lv_obj_t* btn = lv_btn_create(backScreen);
+  lv_obj_set_size(btn, 240, 56);
+  lv_obj_align(btn, LV_ALIGN_CENTER, 0, 78);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A1C08), 0);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(btn, 16, 0);
+  lv_obj_set_style_border_width(btn, 2, 0);
+  lv_obj_set_style_border_color(btn, lv_color_hex(0xFFA050), 0);
+  backBtnLabel = lv_label_create(btn);
+  lv_label_set_text(backBtnLabel, LV_SYMBOL_PLAY "  START");
+  lv_obj_set_style_text_color(backBtnLabel, lv_color_hex(0xFFA050), 0);
+  lv_obj_center(backBtnLabel);
+  lv_obj_add_event_cb(btn, backBtnCB, LV_EVENT_CLICKED, this);
+
+  lv_obj_t* hint = lv_label_create(backScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(backScreen, backGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::showBackScreen() {
+  backReps = 0;
+  backRunning = false;
+  lv_label_set_text(backRepLabel, "0");
+  lv_label_set_text(backHintLabel, "hold the pet, press START");
+  lv_label_set_text(backBtnLabel, LV_SYMBOL_PLAY "  START");
+  lv_scr_load_anim(backScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+void PetUI::addBackRep() {
+  if (!backRunning) return;
+  backReps++;
+  lv_label_set_text_fmt(backRepLabel, "%d", backReps);
+  if (backReps == BACK_TARGET_REPS)
+    lv_label_set_text(backHintLabel, "target hit! keep going or DONE");
+}
+
+void PetUI::backBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+
+  if (!self->backRunning) {
+    self->backRunning = true;
+    self->backReps = 0;
+    lv_label_set_text(self->backRepLabel, "0");
+    lv_label_set_text_fmt(self->backHintLabel, "swing wide! %d reps = snack", BACK_TARGET_REPS);
+    lv_label_set_text_fmt(self->backBtnLabel, LV_SYMBOL_OK "  DONE (need %d)", BACK_TARGET_REPS);
+    return;
+  }
+
+  self->backRunning = false;
+  if (self->backReps >= BACK_TARGET_REPS) {
+    self->pet->feed(45, 12);
+    self->pet->addXP(BACK_XP);
+    self->refreshPetScreen();
+    lv_label_set_text_fmt(self->backHintLabel, "fed the blob  +%d xp", BACK_XP);
+    if (self->soundCB) self->soundCB(SOUND_HABIT_DONE);
+    if (self->backDoneCB) self->backDoneCB();
+    // Let the reward text land, then back to the pet to see the effect.
+    lv_timer_t* t = lv_timer_create(backDoneTimerCB, 1200, self);
+    lv_timer_set_repeat_count(t, 1);
+  } else {
+    lv_label_set_text(self->backHintLabel, "hold the pet, press START");
+    lv_label_set_text(self->backBtnLabel, LV_SYMBOL_PLAY "  START");
+  }
+}
+
+void PetUI::backDoneTimerCB(lv_timer_t* t) {
+  PetUI* self = (PetUI*)t->user_data;
+  if (lv_scr_act() == self->backScreen) self->showPetScreen();
+}
+
+void PetUI::backGestureCB(lv_event_t* e) {
+  // Any swipe cancels the session (no award) and returns to the pet.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->backRunning = false;
+  self->showPetScreen();
+}
+
+/* ---- trophy screen ------------------------------------------------- */
+
+void PetUI::buildTrophyScreen() {
+  trophyScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(trophyScreen, lv_color_hex(0x000000), 0);
+
+  lv_obj_t* title = lv_label_create(trophyScreen);
+  lv_label_set_text(title, "Trophies");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xFFD060), 0);
+
+  trophyList = lv_list_create(trophyScreen);
+  lv_obj_set_size(trophyList, 350, 336);  // same max round-safe footprint as the habit list
+  lv_obj_align(trophyList, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_radius(trophyList, 30, 0);
+  lv_obj_set_style_clip_corner(trophyList, true, 0);
+  lv_obj_set_style_bg_color(trophyList, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_border_color(trophyList, lv_color_hex(0x3A2E08), 0);
+  lv_obj_set_style_border_width(trophyList, 1, 0);
+  lv_obj_set_style_pad_row(trophyList, 6, 0);
+  lv_obj_set_style_pad_all(trophyList, 8, 0);
+  lv_obj_set_scroll_dir(trophyList, LV_DIR_VER);  // keep horizontal swipes for the exit gesture
+
+  lv_obj_t* hint = lv_label_create(trophyScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -34);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(trophyScreen, trophyGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::refreshTrophyScreen() {
+  lv_obj_clean(trophyList);
+  if (trophyCount == 0) {
+    lv_obj_t* empty = lv_label_create(trophyList);
+    lv_label_set_text(empty, "no trophies yet\n\nkeep at it!");
+    lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(empty, lv_color_hex(0x5A4A18), 0);
+    lv_obj_center(empty);
+    return;
+  }
+  for (int i = 0; i < trophyCount; i++) {
+    lv_obj_t* btn = lv_list_add_btn(trophyList, LV_SYMBOL_OK, trophies[i].name);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x171204), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(btn, 0, 0);
+    lv_obj_set_style_pad_ver(btn, 10, 0);
+    lv_obj_set_style_text_color(btn, lv_color_hex(0xFFD060), 0);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_CLICKABLE);  // read-only: earned server-side
+  }
+}
+
+void PetUI::showTrophyScreen() {
+  refreshTrophyScreen();
+  lv_scr_load_anim(trophyScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+void PetUI::setTrophies(const TrophyInfo* newTrophies, int count) {
+  if (count < 0) count = 0;
+  if (count > MAX_TROPHIES) count = MAX_TROPHIES;
+  trophyCount = count;
+  for (int i = 0; i < count; i++) trophies[i] = newTrophies[i];
+  if (lv_scr_act() == trophyScreen) refreshTrophyScreen();
+}
+
+void PetUI::trophyGestureCB(lv_event_t* e) {
+  // Same dismissal as the other menu apps: any swipe goes back to the pet.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->showPetScreen();
+}
+
 void PetUI::appsGestureCB(lv_event_t* e) {
   // Opened by a physical button, so there's no "opposite swipe" to mirror:
   // any swipe direction dismisses back to the pet.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->showPetScreen();
+}
+
+/* ---- sleep screen -------------------------------------------------- */
+
+// Button styling: label text + accent color per quality, matching the
+// workout difficulty palette (green / amber / red).
+static const char*    SLEEP_LABELS[3] = { "good", "medium", "bad" };
+static const uint32_t SLEEP_COLORS[3] = { 0x3EE8A0, 0xFFD060, 0xFF8080 };
+
+void PetUI::buildSleepScreen() {
+  sleepScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(sleepScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(sleepScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* title = lv_label_create(sleepScreen);
+  lv_label_set_text(title, "SLEEP");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_style_text_color(title, lv_color_hex(0x4A3A80), 0);
+
+  lv_obj_t* prompt = lv_label_create(sleepScreen);
+  lv_label_set_text(prompt, "how did you sleep?");
+  lv_obj_align(prompt, LV_ALIGN_TOP_MID, 0, 76);
+  lv_obj_set_style_text_color(prompt, lv_color_hex(0xA080FF), 0);
+
+  const int btnH = 64, pitch = btnH + 16;
+  for (int i = 0; i < 3; i++) {
+    lv_obj_t* btn = lv_btn_create(sleepScreen);
+    lv_obj_set_size(btn, 280, btnH);
+    lv_obj_align(btn, LV_ALIGN_CENTER, 0, (i - 1) * pitch + 6);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x10101E), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(btn, 18, 0);
+    lv_obj_set_style_border_width(btn, 2, 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(SLEEP_COLORS[i]), 0);
+    lv_obj_t* lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, SLEEP_LABELS[i]);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(SLEEP_COLORS[i]), 0);
+    lv_obj_center(lbl);
+    lv_obj_set_user_data(btn, (void*)(intptr_t)i);
+    lv_obj_add_event_cb(btn, sleepBtnCB, LV_EVENT_CLICKED, this);
+    sleepBtns[i] = btn;
+  }
+
+  sleepStatusLabel = lv_label_create(sleepScreen);
+  lv_label_set_text(sleepStatusLabel, "");
+  lv_obj_align(sleepStatusLabel, LV_ALIGN_BOTTOM_MID, 0, -76);
+  lv_obj_set_style_text_color(sleepStatusLabel, lv_color_hex(0xA080FF), 0);
+
+  lv_obj_t* hint = lv_label_create(sleepScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(sleepScreen, sleepGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::refreshSleepScreen() {
+  for (int i = 0; i < 3; i++) {
+    if (sleepLogged) {
+      lv_obj_add_state(sleepBtns[i], LV_STATE_DISABLED);
+      lv_obj_set_style_opa(sleepBtns[i], i == sleepQuality ? LV_OPA_COVER : LV_OPA_40, 0);
+    } else {
+      lv_obj_clear_state(sleepBtns[i], LV_STATE_DISABLED);
+      lv_obj_set_style_opa(sleepBtns[i], LV_OPA_COVER, 0);
+    }
+  }
+  if (sleepLogged) {
+    lv_label_set_text_fmt(sleepStatusLabel, "logged today: %s", SLEEP_LABELS[sleepQuality]);
+    lv_obj_set_style_text_color(sleepStatusLabel, lv_color_hex(SLEEP_COLORS[sleepQuality]), 0);
+  } else {
+    lv_label_set_text(sleepStatusLabel, "");
+  }
+}
+
+void PetUI::showSleepScreen() {
+  refreshSleepScreen();
+  lv_scr_load_anim(sleepScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+void PetUI::setSleepLogged(bool logged, int quality) {
+  sleepLogged  = logged;
+  sleepQuality = (quality >= 0 && quality <= 2) ? quality : 0;
+  if (lv_scr_act() == sleepScreen) refreshSleepScreen();
+}
+
+void PetUI::sleepBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  // Swipes emit a CLICKED on release; same guard as the habit list.
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  if (self->sleepLogged) return;
+  int quality = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+
+  self->pet->logSleep(quality);
+  self->sleepLogged  = true;
+  self->sleepQuality = quality;
+  self->refreshSleepScreen();
+  self->refreshPetScreen();
+  if (self->soundCB) self->soundCB(quality == 2 ? SOUND_HABIT_UNDONE : SOUND_HABIT_DONE);
+  if (self->sleepCB) self->sleepCB(quality);
+
+  // Brief pause so the "logged today" state registers, then back to the pet
+  // so the mood/hunger change is visible immediately.
+  lv_timer_t* t = lv_timer_create(sleepReturnTimerCB, 900, self);
+  lv_timer_set_repeat_count(t, 1);
+}
+
+void PetUI::sleepReturnTimerCB(lv_timer_t* t) {
+  PetUI* self = (PetUI*)t->user_data;
+  if (lv_scr_act() == self->sleepScreen) self->showPetScreen();
+}
+
+void PetUI::sleepGestureCB(lv_event_t* e) {
+  // Same dismissal as the apps menu: any swipe goes back to the pet.
   PetUI* self = (PetUI*)lv_event_get_user_data(e);
   self->lastGestureMs = lv_tick_get();
   lv_indev_wait_release(lv_indev_get_act());
@@ -1465,6 +1781,24 @@ void PetUI::buildWalkScreen() {
   lv_obj_set_style_text_color(walkGoalLabel, lv_color_hex(0x2A4A68), 0);
   lv_obj_align(walkGoalLabel, LV_ALIGN_CENTER, 0, 74);
 
+  // Pocket mode: blank the panel + ignore touch so the device can count
+  // steps in a pocket without phantom taps; the BOOT button wakes it back
+  // into this screen (board-wired via PocketModeCB).
+  lv_obj_t* pocketBtn = lv_btn_create(walkScreen);
+  lv_obj_set_size(pocketBtn, 210, 44);
+  lv_obj_align(pocketBtn, LV_ALIGN_BOTTOM_MID, 0, -78);
+  lv_obj_set_style_bg_color(pocketBtn, lv_color_hex(0x10101E), 0);
+  lv_obj_set_style_bg_opa(pocketBtn, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(pocketBtn, 14, 0);
+  lv_obj_set_style_border_width(pocketBtn, 2, 0);
+  lv_obj_set_style_border_color(pocketBtn, lv_color_hex(0x50A8E8), 0);
+  lv_obj_t* pocketLbl = lv_label_create(pocketBtn);
+  lv_label_set_text(pocketLbl, LV_SYMBOL_EYE_CLOSE "  pocket mode");
+  lv_obj_set_style_text_color(pocketLbl, lv_color_hex(0x50A8E8), 0);
+  lv_obj_set_style_text_font(pocketLbl, &lv_font_montserrat_14, 0);
+  lv_obj_center(pocketLbl);
+  lv_obj_add_event_cb(pocketBtn, walkPocketBtnCB, LV_EVENT_CLICKED, this);
+
   lv_obj_t* hint = lv_label_create(walkScreen);
   lv_label_set_text(hint, "swipe to close");
   lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
@@ -1472,6 +1806,17 @@ void PetUI::buildWalkScreen() {
   lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
 
   lv_obj_add_event_cb(walkScreen, walkGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::updateClock(int hour, int minute) {
+  lv_label_set_text_fmt(clockLabel, "%02d:%02d", hour, minute);
+}
+
+void PetUI::walkPocketBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  // Swipes emit a CLICKED on release; same guard as the habit list.
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  if (self->pocketCB) self->pocketCB();
 }
 
 void PetUI::refreshWalkScreen() {

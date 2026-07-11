@@ -439,7 +439,7 @@ const WALK_STRIDE_CM  = 70;
 const STEP_HISTORY_DAYS = 90;
 
 app.post('/api/sync', (req, res) => {
-  const { deviceId, petState, completedHabits, steps } = req.body;
+  const { deviceId, petState, completedHabits, steps, sleep, backSessions } = req.body;
   // Use the server's local date as the canonical completion date.
   // Device and server clocks may disagree slightly around midnight — the server
   // date is always preferred so history records are consistent.
@@ -486,6 +486,22 @@ app.post('/api/sync', (req, res) => {
       const cutoff = new Date(Date.now() - STEP_HISTORY_DAYS * 864e5).toISOString().slice(0, 10);
       for (const k of Object.keys(d.stepHistory)) if (k < cutoff) delete d.stepHistory[k];
     }
+    // Sleep history: quality (0 good / 1 medium / 2 bad) keyed by the date
+    // the device logged it. No server-date fallback — a rating stamped with
+    // an unset clock is dropped rather than recorded on the wrong day.
+    if (sleep && typeof sleep.quality === 'number' && sleep.quality >= 0 && sleep.quality <= 2 &&
+        sleep.year >= 2020 && sleep.dayOfYear >= 1 && sleep.dayOfYear <= 366) {
+      const key = new Date(Date.UTC(sleep.year, 0, sleep.dayOfYear)).toISOString().slice(0, 10);
+      d.sleepHistory = d.sleepHistory || {};
+      d.sleepHistory[key] = sleep.quality;
+      const cutoff = new Date(Date.now() - STEP_HISTORY_DAYS * 864e5).toISOString().slice(0, 10);
+      for (const k of Object.keys(d.sleepHistory)) if (k < cutoff) delete d.sleepHistory[k];
+    }
+    // Back-workout lifetime sessions: monotonic max (a device NVS wipe can
+    // never claw back earned trophies).
+    if (typeof backSessions === 'number' && backSessions > (d.backSessions || 0)) {
+      d.backSessions = backSessions;
+    }
   });
   res.json({
     habits:        data.habits.filter(h => h.active),
@@ -495,8 +511,131 @@ app.post('/api/sync', (req, res) => {
     // FIX 1: device uses these to delta-apply dashboard XP and stay in config sync
     dashXpTotal:   data.dashXpTotal   || 0,
     petResetToken: data.petResetToken || 0,
-    configVersion: data.configVersion || 1
+    configVersion: data.configVersion || 1,
+    // Earned trophy names for the device's trophy screen (read-only there).
+    trophies:      computeTrophies(data).filter(t => t.earned).map(t => t.name)
   });
+});
+
+// ---------- Trophies ---------------------------------------------------------
+// Computed on the fly from history — deterministic, so nothing to persist.
+// Device gets earned names in the sync response (quests/goals pattern);
+// the dashboard panel shows the full list with locked/unlocked state.
+
+function computeTrophies(d) {
+  const stepVals  = Object.values(d.stepHistory || {});
+  const sleepVals = Object.values(d.sleepHistory || {});
+  const log       = d.completionLog || [];
+
+  // Best habit streak ever: longest consecutive-day chain per habit.
+  const byHabit = new Map();
+  for (const e of log) {
+    const key = (typeof e.habitId === 'number' && e.habitId >= 0) ? `#${e.habitId}` : `n:${e.habitName}`;
+    if (!byHabit.has(key)) byHabit.set(key, new Set());
+    byHabit.get(key).add(e.date);
+  }
+  let bestStreak = 0;
+  for (const dates of byHabit.values()) {
+    const sorted = [...dates].sort();
+    let cur = sorted.length ? 1 : 0;
+    if (cur > bestStreak) bestStreak = cur;
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = new Date(sorted[i - 1]);
+      prev.setDate(prev.getDate() + 1);
+      cur = prev.toISOString().slice(0, 10) === sorted[i] ? cur + 1 : 1;
+      if (cur > bestStreak) bestStreak = cur;
+    }
+  }
+
+  // Level from the firmware's curve: xpForLevel(L) = 25L² + 75L.
+  const xp = (d.petState && d.petState.xp) || 0;
+  let level = 0;
+  while (25 * (level + 1) ** 2 + 75 * (level + 1) <= xp) level++;
+  const stage = (d.petState && d.petState.stage) || 0;
+
+  // Most completions on a single day (for the busy-bee trophy).
+  const perDay = new Map();
+  for (const e of log) perDay.set(e.date, (perDay.get(e.date) || 0) + 1);
+  const maxPerDay = Math.max(0, ...perDay.values());
+
+  const goalWalks  = stepVals.filter(s => s >= WALK_DAILY_GOAL).length;
+  const totalKm    = stepVals.reduce((a, s) => a + s, 0) * WALK_STRIDE_CM / 100000;
+  const goodNights = sleepVals.filter(q => q === 0).length;
+
+  // Longest run of consecutive calendar dates with a "good" rating.
+  const goodDates = Object.entries(d.sleepHistory || {})
+    .filter(([, q]) => q === 0).map(([k]) => k).sort();
+  let goodRun = goodDates.length ? 1 : 0, run = 1;
+  for (let i = 1; i < goodDates.length; i++) {
+    const prev = new Date(goodDates[i - 1]);
+    prev.setDate(prev.getDate() + 1);
+    run = prev.toISOString().slice(0, 10) === goodDates[i] ? run + 1 : 1;
+    if (run > goodRun) goodRun = run;
+  }
+
+  const questDone = (d.quests || []).some(q => q.done);
+  const daysAlive = (d.petState && d.petState.daysAlive) || 0;
+
+  // Strength: completion-days of habits whose name mentions the exercise
+  // (matches "10 pullups", "push ups", "Pull-Ups", ...). Distinct dates so
+  // renames/duplicates can't double-count a day.
+  const daysMatching = (re) => new Set(
+    log.filter(e => re.test(e.habitName || '')).map(e => e.date)
+  ).size;
+  const pullDays = daysMatching(/pull[\s-]?ups?/i);
+  const pushDays = daysMatching(/push[\s-]?ups?/i);
+
+  return [
+    // habits
+    { id: 'first-habit', cat: 'habits',  name: 'First step',      desc: 'complete your first habit',   earned: log.length >= 1 },
+    { id: 'habits-10',   cat: 'habits',  name: 'Regular',         desc: '10 habit completions',        earned: log.length >= 10 },
+    { id: 'habits-100',  cat: 'habits',  name: 'Centurion',       desc: '100 habit completions',       earned: log.length >= 100 },
+    { id: 'habits-500',  cat: 'habits',  name: 'Legend',          desc: '500 habit completions',       earned: log.length >= 500 },
+    { id: 'streak-7',    cat: 'habits',  name: 'Week warrior',    desc: 'a 7-day habit streak',        earned: bestStreak >= 7 },
+    { id: 'streak-30',   cat: 'habits',  name: 'Iron month',      desc: 'a 30-day habit streak',       earned: bestStreak >= 30 },
+    { id: 'streak-100',  cat: 'habits',  name: 'Unstoppable',     desc: 'a 100-day habit streak',      earned: bestStreak >= 100 },
+    { id: 'busy-bee',    cat: 'habits',  name: 'Busy bee',        desc: '5 habits done in one day',    earned: maxPerDay >= 5 },
+    // walking
+    { id: 'steps-2k',    cat: 'walking', name: 'Warm-up',         desc: '2,000 steps in a day',        earned: stepVals.some(s => s >= 2000) },
+    { id: 'steps-10k',   cat: 'walking', name: 'Long hauler',     desc: '10,000 steps in one day',     earned: stepVals.some(s => s >= 10000) },
+    { id: 'steps-20k',   cat: 'walking', name: 'Ultra',           desc: '20,000 steps in one day',     earned: stepVals.some(s => s >= 20000) },
+    { id: 'walk-5',      cat: 'walking', name: 'Regular walker',  desc: '5 days at the step goal',     earned: goalWalks >= 5 },
+    { id: 'walk-25',     cat: 'walking', name: 'Trail veteran',   desc: '25 days at the step goal',    earned: goalWalks >= 25 },
+    { id: 'km-100',      cat: 'walking', name: 'Globetrotter',    desc: '100 km walked in total',      earned: totalKm >= 100 },
+    // strength
+    { id: 'back-1',      cat: 'strength', name: 'First row',      desc: 'first back workout',          earned: (d.backSessions || 0) >= 1 },
+    { id: 'back-10',     cat: 'strength', name: 'Row machine',    desc: '10 back workouts',            earned: (d.backSessions || 0) >= 10 },
+    { id: 'back-30',     cat: 'strength', name: 'Iron back',      desc: '30 back workouts',            earned: (d.backSessions || 0) >= 30 },
+    { id: 'pull-1',      cat: 'strength', name: 'First hang',     desc: 'first pull-up day',           earned: pullDays >= 1 },
+    { id: 'pull-10',     cat: 'strength', name: 'Bar starter',    desc: '10 pull-up days',             earned: pullDays >= 10 },
+    { id: 'pull-30',     cat: 'strength', name: 'Bar veteran',    desc: '30 pull-up days',             earned: pullDays >= 30 },
+    { id: 'push-1',      cat: 'strength', name: 'First rep',      desc: 'first push-up day',           earned: pushDays >= 1 },
+    { id: 'push-10',     cat: 'strength', name: 'Floor regular',  desc: '10 push-up days',             earned: pushDays >= 10 },
+    { id: 'push-30',     cat: 'strength', name: 'Floor general',  desc: '30 push-up days',             earned: pushDays >= 30 },
+    // sleep
+    { id: 'sleep-7',     cat: 'sleep',   name: 'Well rested',     desc: '7 nights of good sleep',      earned: goodNights >= 7 },
+    { id: 'dream-week',  cat: 'sleep',   name: 'Dream week',      desc: '7 good nights in a row',      earned: goodRun >= 7 },
+    { id: 'sleep-30',    cat: 'sleep',   name: 'Sleep scientist', desc: '30 nights logged',            earned: sleepVals.length >= 30 },
+    { id: 'bad-night',   cat: 'sleep',   name: 'It happens',      desc: 'honestly log a bad night',    earned: sleepVals.some(q => q === 2) },
+    // pet
+    { id: 'hatched',     cat: 'pet',     name: 'Hatched',         desc: 'reach the blob stage',        earned: stage >= 1 },
+    { id: 'level-5',     cat: 'pet',     name: 'Level 5',         desc: 'reach level 5',               earned: level >= 5 },
+    { id: 'level-10',    cat: 'pet',     name: 'Level 10',        desc: 'reach level 10',              earned: level >= 10 },
+    { id: 'level-20',    cat: 'pet',     name: 'Overachiever',    desc: 'reach level 20',              earned: level >= 20 },
+    { id: 'evolved',     cat: 'pet',     name: 'Final form',      desc: 'reach the evolved stage',     earned: stage >= 3 },
+    { id: 'quest-1',     cat: 'pet',     name: 'Adventurer',      desc: 'complete your first quest',   earned: questDone },
+    { id: 'days-30',     cat: 'pet',     name: 'Survivor',        desc: '30 days together',            earned: daysAlive >= 30 },
+  ];
+}
+
+app.get('/api/trophies', (req, res) => {
+  res.json(computeTrophies(store.get()));
+});
+
+// Sleep history for the dashboard panel.
+app.get('/api/sleep', (req, res) => {
+  const d = store.get();
+  res.json({ history: d.sleepHistory || {} });
 });
 
 // Walking analytics for the dashboard panel.

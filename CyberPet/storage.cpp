@@ -141,3 +141,45 @@ StepState Storage::loadStepState() {
   if (len == sizeof(StepState)) prefs.getBytes("steps", &s, sizeof(StepState));
   return s;
 }
+
+void Storage::saveSleepState(const SleepState& s) {
+  SleepState cur = loadSleepState();
+  if (memcmp(&cur, &s, sizeof(SleepState)) == 0) return;
+  prefs.putBytes("sleep", &s, sizeof(SleepState));
+}
+
+SleepState Storage::loadSleepState() {
+  SleepState s = {};
+  size_t len = prefs.getBytesLength("sleep");
+  if (len == sizeof(SleepState)) prefs.getBytes("sleep", &s, sizeof(SleepState));
+  return s;
+}
+
+void Storage::saveTrophies(const TrophyInfo* trophies, int count) {
+  if (count < 0) count = 0;
+  if (count > MAX_TROPHIES) count = MAX_TROPHIES;
+  TrophyInfo cur[MAX_TROPHIES];
+  if (loadTrophies(cur) == count &&
+      memcmp(cur, trophies, sizeof(TrophyInfo) * count) == 0) return;
+  if (count > 0) prefs.putBytes("trophies", trophies, sizeof(TrophyInfo) * count);
+  else           prefs.remove("trophies");
+  prefs.putInt("trophy_count", count);
+}
+
+int Storage::loadTrophies(TrophyInfo* trophies) {
+  int count = prefs.getInt("trophy_count", 0);
+  if (count <= 0 || count > MAX_TROPHIES) return 0;
+  size_t len = prefs.getBytesLength("trophies");
+  if (len != sizeof(TrophyInfo) * (size_t)count) return 0;  // struct changed / stale
+  prefs.getBytes("trophies", trophies, len);
+  return count;
+}
+
+void Storage::saveBackSessions(uint32_t n) {
+  if (loadBackSessions() == n) return;
+  prefs.putUInt("back_sessions", n);
+}
+
+uint32_t Storage::loadBackSessions() {
+  return prefs.getUInt("back_sessions", 0);
+}

@@ -92,6 +92,17 @@ void WifiSync::buildSyncRequest(Pet* pet, HabitTracker* tracker, String& out) {
   stepsObj["year"]      = stepYear_;
   stepsObj["dayOfYear"] = stepDoy_;
 
+  // Lifetime completed back-workout sessions (server keeps max; trophies).
+  reqDoc["backSessions"] = backSessions_;
+
+  // Sleep rating rides along once logged; keyed server-side by its own date.
+  if (sleepQuality_ >= 0) {
+    JsonObject sleepObj = reqDoc["sleep"].to<JsonObject>();
+    sleepObj["quality"]   = sleepQuality_;
+    sleepObj["year"]      = sleepYear_;
+    sleepObj["dayOfYear"] = sleepDoy_;
+  }
+
   JsonArray completed = reqDoc["completedHabits"].to<JsonArray>();
   for (int i = 0; i < MAX_HABITS; i++) {
     Habit* h = tracker->get(i);
@@ -314,6 +325,17 @@ bool WifiSync::applySyncResponse(const String& response, Pet* pet, HabitTracker*
     strncpy(goals[goalCount].period, gperiod, GOAL_PERIOD_LEN - 1);
     goals[goalCount].period[GOAL_PERIOD_LEN - 1] = '\0';
     goalCount++;
+  }
+
+  // Trophies: earned names computed server-side. Copy for the trophy screen.
+  trophyCount = 0;
+  for (JsonVariant t : respDoc["trophies"].as<JsonArray>()) {
+    if (trophyCount >= MAX_TROPHIES) break;
+    const char* tname = t | "";
+    if (tname[0] == '\0') continue;
+    strncpy(trophies[trophyCount].name, tname, TROPHY_NAME_LEN - 1);
+    trophies[trophyCount].name[TROPHY_NAME_LEN - 1] = '\0';
+    trophyCount++;
   }
 
   // One-shot dashboard commands (see getPetResetToken in wifi_sync.h).

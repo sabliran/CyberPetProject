@@ -17,6 +17,15 @@ struct StepState {
   bool     rewarded;
 };
 
+// Sleep app: which calendar date last night's rating was logged on (the
+// once-per-day gate) and what it was. Zero-init (= {}) matters for the
+// change-guard memcmp, same as StepState.
+struct SleepState {
+  int year;      // 0 = never logged / logged with an unset clock
+  int dayOfYear;
+  int quality;   // 0 good, 1 medium, 2 bad
+};
+
 // Wraps ESP32 NVS flash storage so pet + habit state survives reboots/power loss.
 class Storage {
 public:
@@ -46,6 +55,8 @@ public:
   int  loadQuests(QuestInfo* quests);
   void saveGoals(const GoalInfo* goals, int count);
   int  loadGoals(GoalInfo* goals);
+  void saveTrophies(const TrophyInfo* trophies, int count);
+  int  loadTrophies(TrophyInfo* trophies);
 
   // Last-applied dashboard XP-reset token (monotonic; see WifiSync).
   void saveXpResetToken(int token);
@@ -55,6 +66,14 @@ public:
   // the pedometer every couple of seconds but only persists on change).
   void saveStepState(const StepState& s);
   StepState loadStepState();
+
+  // Sleep app daily rating gate.
+  void saveSleepState(const SleepState& s);
+  SleepState loadSleepState();
+
+  // Back-workout app: lifetime completed-session count (trophy fuel).
+  void saveBackSessions(uint32_t n);
+  uint32_t loadBackSessions();
 
 private:
   Preferences prefs;

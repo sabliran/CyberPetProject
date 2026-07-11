@@ -35,6 +35,22 @@ struct GoalInfo {
   char period[GOAL_PERIOD_LEN];  // "daily" / "weekly" / ... (free-form from dashboard)
 };
 
+// Trophies are dashboard-owned and read-only on the device, same contract
+// as quests/goals: the sync response's `trophies` array (earned names only,
+// computed server-side from history) is copied here for display.
+#define MAX_TROPHIES     36   // >= total defined server-side (34 as of July 2026)
+#define TROPHY_NAME_LEN  40
+
+// Back-workout app tuning: reps are counted by the board's IMU on wide
+// swings (sketch calls addBackRep while isBackRunning); hitting the target
+// feeds the blob and pays BACK_XP.
+#define BACK_TARGET_REPS 10
+#define BACK_XP          15
+
+struct TrophyInfo {
+  char name[TROPHY_NAME_LEN];
+};
+
 // Walk app tuning. Steps come from the board's pedometer (1.75B: QMI8658
 // hardware step counter); the sketch feeds them in via setSteps(). The UI
 // only displays — daily reset, persistence and the goal XP award live in the
@@ -51,6 +67,24 @@ enum PetSoundEvent {
   SOUND_HABIT_UNDONE,
 };
 typedef void (*PetSoundCB)(int event);
+
+// Sleep app: fired when the user rates last night (0 good, 1 medium, 2 bad).
+// The UI applies the pet effects itself (Pet::logSleep); the board sketch
+// uses this hook to persist the once-per-day gate + pet state to NVS.
+// Unset = nothing persists (sim: gate resets every run, which is fine).
+typedef void (*SleepLogCB)(int quality);
+
+// Walk app pocket mode: fired by the on-screen "pocket mode" button. The
+// board sketch owns what it means (1.75B: panel brightness to 0 + ignore
+// touch until the BOOT button is pressed; step counting keeps running).
+// Unset = the button does nothing (sim has no panel to blank).
+typedef void (*PocketModeCB)(void);
+
+// Back-workout app: fired when a session ends with the target reached
+// (after the pet reward is applied). The sketch bumps its lifetime session
+// counter, persists it, and reports it in sync requests so the server can
+// award back-workout trophies.
+typedef void (*BackDoneCB)(void);
 
 class PetUI {
 public:
@@ -73,6 +107,7 @@ public:
   void pomodoroGuiltTrip();   // hook for IMU "picked up during focus" guilt-trip
   void sedentaryNudge();       // trigger sedentary state (also called by sim `s` key)
   void updateBattery(int pct, bool charging = false); // pct 0-100; -1 = unknown; call periodically from loop()
+  void updateClock(int hour, int minute); // pet-screen clock; hidden until first call (sketch gates on clock validity)
 
   // Quest screen (pet screen swipe-right). Data comes from the dashboard sync
   // response; call setQuests after every successful sync.
@@ -100,6 +135,28 @@ public:
   // the "no motion sensor" state instead of a count.
   void showWalkScreen();
   void setSteps(uint32_t stepsToday, bool sensorOk);
+  void setPocketModeCallback(PocketModeCB cb) { pocketCB = cb; }
+
+  // Back-workout app: rep counter driven by the board's IMU. The sketch's
+  // swing detector calls addBackRep() while isBackRunning() — cheap no-op
+  // checks otherwise. Sensorless builds just never count.
+  void showBackScreen();
+  void addBackRep();
+  bool isBackRunning() const { return backRunning; }
+  void setBackDoneCallback(BackDoneCB cb) { backDoneCB = cb; }
+
+  // Trophy screen (apps menu). Same sync contract as quests/goals:
+  // call setTrophies after every successful sync.
+  void showTrophyScreen();
+  void setTrophies(const TrophyInfo* trophies, int count);
+
+  // Sleep app: "how did you sleep?" — three buttons, once per day.
+  // setSleepLogged() is how the sketch restores/clears the daily gate
+  // (boot restore from NVS, midnight re-arm); quality is only meaningful
+  // when logged=true.
+  void showSleepScreen();
+  void setSleepLogged(bool logged, int quality);
+  void setSleepCallback(SleepLogCB cb) { sleepCB = cb; }
 
   // Apps menu: a launcher listing the built-in apps (workout, focus, ...).
   // The board sketch wires it to a physical button (1.75B: short-press BOOT);
@@ -127,6 +184,7 @@ private:
   lv_obj_t* xpLabel;
 
   // battery state
+  lv_obj_t*    clockLabel;        // pet screen clock; empty until updateClock()
   lv_obj_t*    batteryLabel;      // pet screen indicator; hidden until first update
   int          batteryPct;        // -1 = unknown/not yet read
   bool         batteryWarnShown;  // true once "getting sleepy" bubble has fired this low episode
@@ -162,6 +220,29 @@ private:
   // apps menu screen
   lv_obj_t*  appsScreen;
 
+  // back-workout screen widgets + state
+  lv_obj_t*  backScreen;
+  lv_obj_t*  backRepLabel;
+  lv_obj_t*  backHintLabel;
+  lv_obj_t*  backBtnLabel;
+  int        backReps;
+  bool       backRunning;
+  BackDoneCB backDoneCB = nullptr;  // deliberately NOT reset in init()
+
+  // trophy screen widgets + data
+  lv_obj_t*   trophyScreen;
+  lv_obj_t*   trophyList;
+  TrophyInfo  trophies[MAX_TROPHIES];
+  int         trophyCount;
+
+  // sleep screen widgets + state
+  lv_obj_t*  sleepScreen;
+  lv_obj_t*  sleepBtns[3];
+  lv_obj_t*  sleepStatusLabel;
+  bool       sleepLogged;
+  int        sleepQuality;
+  SleepLogCB sleepCB = nullptr;  // deliberately NOT reset in init()
+
   // walk screen widgets + state
   lv_obj_t*  walkScreen;
   lv_obj_t*  walkArc;
@@ -171,6 +252,7 @@ private:
   lv_obj_t*  walkGoalLabel;
   uint32_t   walkSteps;
   bool       walkSensorOk;
+  PocketModeCB pocketCB = nullptr;  // deliberately NOT reset in init()
 
   // manual-sync state (press & hold + overlay)
   uint32_t   lastGestureMs;  // swipes also emit clicks on release; used to filter them out
@@ -224,6 +306,11 @@ private:
   void buildGoalScreen();
   void refreshGoalScreen();
   void buildAppsScreen();
+  void buildBackScreen();
+  void buildTrophyScreen();
+  void refreshTrophyScreen();
+  void buildSleepScreen();
+  void refreshSleepScreen();
   void buildWalkScreen();
   void refreshWalkScreen();
   void buildWorkoutScreen();
@@ -261,6 +348,14 @@ private:
   static void appsGestureCB(lv_event_t* e);
   static void appsBtnCB(lv_event_t* e);
   static void walkGestureCB(lv_event_t* e);
+  static void walkPocketBtnCB(lv_event_t* e);
+  static void trophyGestureCB(lv_event_t* e);
+  static void backBtnCB(lv_event_t* e);
+  static void backGestureCB(lv_event_t* e);
+  static void backDoneTimerCB(lv_timer_t* t);
+  static void sleepBtnCB(lv_event_t* e);
+  static void sleepGestureCB(lv_event_t* e);
+  static void sleepReturnTimerCB(lv_timer_t* t);
   static void petLongPressCB(lv_event_t* e);    // press & hold = manual sync
   static void blobPatCB(lv_event_t* e);         // quick tap on the blob = love reaction
   static void pomTapCB(lv_event_t* e);          // double-tap = play/pause on focus screen

@@ -59,6 +59,30 @@ void Pet::feed(int hungerAmount, int moodBoost) {
   state.mood     = min(100, state.mood + max(0, moodBoost));
 }
 
+// Sleep-quality report from the sleep app (0 good, 1 medium, 2 bad).
+// Good rest leaves the blob content and snacky; a bad night drains it
+// across the board — the only XP penalty outside habit-undo, so keep it
+// small relative to habit rewards.
+void Pet::logSleep(int quality) {
+  if (!state.alive) return;
+  switch (quality) {
+    case 0:  // good
+      state.mood   = min(100, state.mood + 12);
+      state.hunger = min(100, state.hunger + 8);
+      break;
+    case 1:  // medium
+      state.mood   = min(100, state.mood + 5);
+      state.hunger = min(100, state.hunger + 3);
+      break;
+    case 2:  // bad
+      state.xp     = max(0, state.xp - 15);
+      state.mood   = max(0, state.mood - 10);
+      state.hunger = max(0, state.hunger - 8);
+      checkEvolution();  // XP drop can demote a stage
+      break;
+  }
+}
+
 void Pet::hungerHourlyTick() {
   if (!state.alive) return;
   state.hunger = max(0, state.hunger - HUNGER_DECAY_PER_HOUR);

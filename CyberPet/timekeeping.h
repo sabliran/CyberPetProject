@@ -21,6 +21,7 @@ struct WallDate {
     int  year;
     int  dayOfYear; // 1-366  (tm_yday + 1)
     int  hour;      // 0-23 local time
+    int  minute;    // 0-59 (pet-screen clock; reset logic only uses hour)
     bool valid;
 };
 
@@ -72,7 +73,7 @@ public:
 
 private:
     bool          rtcValid  = false;
-    mutable WallDate      cachedDate = {0, -1, 0, false};
+    mutable WallDate      cachedDate = {0, -1, 0, 0, false};
     mutable unsigned long cachedAt   = 0;  // millis() timestamp of last I2C read
 
     uint8_t readReg(uint8_t reg) const;

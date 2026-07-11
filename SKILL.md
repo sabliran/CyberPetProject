@@ -251,13 +251,36 @@ reaction; mouse-drag = swipe gestures.
 ## Apps menu
 
 `PetUI::showAppsMenu()` is a launcher screen listing the built-in apps
-(workout, focus, walk) — table-driven via `APP_ENTRIES[]` in `ui.cpp`, so a
+(walk, sleep, trophies) — table-driven via `APP_ENTRIES[]` in `ui.cpp`, so a
 future app is one table row plus one dispatch case in `appsBtnCB`.
 
+Trophies are computed server-side (`computeTrophies` in server.js — pure
+function of completionLog/stepHistory/sleepHistory/petState, nothing
+persisted) and follow the quests/goals device contract exactly: earned names
+ride the sync response, `WifiSync::getTrophies` → `ui.setTrophies` →
+NVS-cached via `Storage::saveTrophies` for reboot survival. Workout and
+focus are deliberately not in the menu — they keep their pet-screen swipes
+(up / down).
+
+The sleep app asks "how did you sleep?" once per day (good/medium/bad →
+`Pet::logSleep`: good +12 mood +8 hunger, medium +5/+3, bad −15 xp −10 mood
+−8 hunger). The UI applies pet effects and fires `SleepLogCB`; the sketch
+persists the daily gate (`SleepState` via `Storage::saveSleepState`) stamped
+with the RTC date, restores it at boot with `setSleepLogged`, and re-arms it
+each new calendar day from loop().
+
+The walk app's "pocket mode" button fires `PocketModeCB` (board-owned:
+1.75B blanks the panel + gates `touchReadCB` so fabric can't tap anything;
+steps keep counting). A BOOT short press wakes it straight back into the
+walk screen — the BOOT handler checks `pocketMode` before opening the apps
+menu.
+
 The walk app displays steps fed in via `PetUI::setSteps()`; counting lives in
-the board sketch (1.75B: QMI8658 hardware pedometer polled every 2 s, deltas
-accumulated into a `StepState` persisted via `Storage::saveStepState` — the
-raw chip counter resets at power-off). Daily reset compares the RTC calendar
+the board sketch (1.75B: software peak detector on accel magnitude — the
+QMI8658's silicon pedometer never counted on this board — with a 10-step
+entry filter at walking cadence: isolated bumps never reach the total, and
+the warm-up burst is credited retroactively once walking is established.
+Deltas accumulate into a `StepState` persisted via `Storage::saveStepState`). Daily reset compares the RTC calendar
 date stamped into StepState; reaching `WALK_DAILY_GOAL` awards
 `WALK_GOAL_XP` once per day (the `rewarded` flag survives reboots). It toggles: the
 same call closes the menu if it's already showing, and any swipe dismisses

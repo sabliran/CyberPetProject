@@ -608,6 +608,90 @@ async function loadWalking() {
     <span><b>${goalDays30}</b> goal day${goalDays30 === 1 ? '' : 's'} last 30</span>`;
 }
 
+// ---- Sleep history ----------------------------------------------------------
+
+const SLEEP_LABELS = ['good', 'medium', 'bad'];
+
+async function loadSleep() {
+  const { history } = await api('/sleep');
+  const now = new Date();
+  const todayKey = walkDateKey(now);
+
+  const today = document.getElementById('sleepToday');
+  if (todayKey in history) {
+    const q = history[todayKey];
+    today.innerHTML = `last night: <b class="sleep-q sleep-q--${q}">${SLEEP_LABELS[q]}</b>`;
+  } else {
+    today.innerHTML = `last night: <span class="sleep-q--none">not logged yet</span>`;
+  }
+
+  // Last 14 nights, oldest first — one dot per night.
+  const nights = document.getElementById('sleepNights');
+  nights.innerHTML = '';
+  for (let i = 13; i >= 0; i--) {
+    const key = walkDateKey(new Date(now.getTime() - i * 864e5));
+    const dot = document.createElement('div');
+    const q = history[key];
+    dot.className = `sleep-dot${q !== undefined ? ` sleep-dot--${q}` : ''}`;
+    dot.title = q !== undefined ? `${key}: ${SLEEP_LABELS[q]}` : `${key}: not logged`;
+    nights.appendChild(dot);
+  }
+
+  // 30-day tally.
+  const cutoff30 = walkDateKey(new Date(now.getTime() - 29 * 864e5));
+  const counts = [0, 0, 0];
+  for (const [key, q] of Object.entries(history)) {
+    if (key >= cutoff30 && q >= 0 && q <= 2) counts[q]++;
+  }
+  document.getElementById('sleepStats').innerHTML = `
+    <span><b class="sleep-q--0">${counts[0]}</b> good</span>
+    <span><b class="sleep-q--1">${counts[1]}</b> medium</span>
+    <span><b class="sleep-q--2">${counts[2]}</b> bad</span>
+    <span>last 30 nights</span>`;
+}
+
+// ---- Trophies ----------------------------------------------------------------
+
+const TROPHY_CATS = [
+  ['habits',   'Habits'],
+  ['strength', 'Strength'],
+  ['walking',  'Walking'],
+  ['sleep',    'Sleep'],
+  ['pet',      'Pet'],
+];
+
+async function loadTrophies() {
+  const trophies = await api('/trophies');
+  const earned = trophies.filter(t => t.earned).length;
+  document.getElementById('trophyTitle').textContent = `Trophies  ${earned} / ${trophies.length}`;
+
+  const groups = document.getElementById('trophyGroups');
+  groups.innerHTML = '';
+  for (const [cat, label] of TROPHY_CATS) {
+    const inCat = trophies.filter(t => t.cat === cat);
+    if (inCat.length === 0) continue;
+    const catEarned = inCat.filter(t => t.earned).length;
+
+    const heading = document.createElement('div');
+    heading.className = 'trophy-cat';
+    heading.innerHTML = `${label} <span class="trophy-cat__count">${catEarned}/${inCat.length}</span>`;
+    groups.appendChild(heading);
+
+    const grid = document.createElement('div');
+    grid.className = 'trophy-grid';
+    for (const t of inCat) {
+      const card = document.createElement('div');
+      card.className = `trophy${t.earned ? ' trophy--earned' : ''}`;
+      card.innerHTML = `
+        <div class="trophy__name">${escapeHtml(t.name)}</div>
+        <div class="trophy__desc">${escapeHtml(t.desc)}</div>`;
+      card.title = t.earned ? 'earned!' : 'not earned yet';
+      grid.appendChild(card);
+    }
+    groups.appendChild(grid);
+  }
+}
+
 // ---- Config version + SSE push indicator ----------------------------------
 
 function updateConfigDisplay(version, updatedAt) {
@@ -643,11 +727,12 @@ function flashPushed() {
 // ---- Boot -----------------------------------------------------------------
 
 async function refreshAll() {
-  await Promise.all([loadPet(), loadHabits(), loadGoals(), loadQuests(), loadSettings(), loadHistory(), loadWalking()]);
+  await Promise.all([loadPet(), loadHabits(), loadGoals(), loadQuests(), loadSettings(), loadHistory(), loadWalking(), loadSleep(), loadTrophies()]);
 }
 
 refreshAll();
 setInterval(loadPet, 15000);
-// Steps arrive with every device sync (10 s on USB), so keep the walking
-// panel fresh on the same cadence as the pet card.
+// Steps and sleep arrive with every device sync (10 s on USB), so keep those
+// panels fresh on the same cadence as the pet card.
 setInterval(loadWalking, 15000);
+setInterval(loadSleep, 15000);
