@@ -288,3 +288,15 @@ back to the pet. Board wiring: short press (50 ms–2 s) of BOOT/GPIO0 on both
 boards — on the 1.75B a 2 s+ hold still powers off via the PMU, and on the
 1.43C the `ui.showAppsMenu()` call must stay inside
 `bsp_display_lock`/`unlock`.
+
+## Device lv_conf.h (outside the repo!)
+
+The 1.75B build depends on `~/Arduino/libraries/lv_conf.h` settings that are
+NOT version-controlled here. On a fresh machine these must be set or bugs
+resurface:
+- `LV_MEM_SIZE (64U * 1024U)` — the default 48K wedges at stage evolution
+  (widgets idle at ~35K; burst + shadow buffer + popups tip it over).
+- `LV_ASSERT_HANDLER abort();` — the stock `while(1);` is a silent freeze
+  with no serial output and no reboot; abort() panics loudly.
+- Fonts enabled: montserrat 14, 20 (default), 32.
+- `LV_COLOR_16_SWAP 1` (CO5300 QSPI byte order on the 1.75B).
