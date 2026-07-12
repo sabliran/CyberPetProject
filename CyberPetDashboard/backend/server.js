@@ -736,10 +736,21 @@ const BRIDGE_SCRIPT = [
 
 let bridgeProc = null;
 let bridgeLog  = [];
+// Routine sync chatter (2+ lines every 10 s) is squelched into a periodic
+// summary so the ring keeps real events — crash forensics got pushed out of
+// the old 100-line ring twice before anyone could read it.
+let syncSquelch = { count: 0, lastEmit: 0 };
 function bridgeLogPush(line) {
   if (!line) return;
+  if (/usb-bridge: synced|Synced over USB bridge/.test(line)) {
+    syncSquelch.count++;
+    const now = Date.now();
+    if (now - syncSquelch.lastEmit < 300000) return;
+    line = `sync ok (x${syncSquelch.count} since last note)`;
+    syncSquelch = { count: 0, lastEmit: now };
+  }
   bridgeLog.push(`[${new Date().toISOString().slice(11, 19)}] ${line}`);
-  if (bridgeLog.length > 100) bridgeLog.shift();
+  if (bridgeLog.length > 500) bridgeLog.shift();
 }
 
 function startBridge(port = '/dev/ttyACM0') {

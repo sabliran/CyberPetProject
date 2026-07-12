@@ -9,6 +9,8 @@
 // ⚠  Cannot be compile-tested without the ESP32 toolchain.
 
 void WifiSync::begin(const char* ssid, const char* password, const char* server) {
+  ssid_     = String(ssid);
+  password_ = String(password);
   serverUrlConfigured = String(server);
   serverUrl = serverUrlConfigured;
 
@@ -31,6 +33,12 @@ void WifiSync::begin(const char* ssid, const char* password, const char* server)
   } else {
     Serial.println("WiFi connect failed - device will keep running standalone.");
   }
+}
+
+void WifiSync::kickReconnect() {
+  if (ssid_.length() == 0) return;   // begin() never ran
+  WiFi.disconnect();
+  WiFi.begin(ssid_.c_str(), password_.c_str());
 }
 
 // Resolve a "*.local" dashboard host via mDNS so DASHBOARD_URL can be a

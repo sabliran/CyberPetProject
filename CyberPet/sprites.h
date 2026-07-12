@@ -8,10 +8,16 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-extern const lv_img_dsc_t sprite_egg;       // 80x80
-extern const lv_img_dsc_t sprite_blob;      // 110x110
-extern const lv_img_dsc_t sprite_creature;  // 140x140
-extern const lv_img_dsc_t sprite_evolved;   // 170x170
+extern const lv_img_dsc_t sprite_egg;             // 80x80 (no walk frames — no legs)
+extern const lv_img_dsc_t sprite_blob;            // 110x110, both feet planted
+extern const lv_img_dsc_t sprite_blob_walk1;      //   left foot lifted
+extern const lv_img_dsc_t sprite_blob_walk2;      //   right foot lifted
+extern const lv_img_dsc_t sprite_creature;        // 140x140
+extern const lv_img_dsc_t sprite_creature_walk1;
+extern const lv_img_dsc_t sprite_creature_walk2;
+extern const lv_img_dsc_t sprite_evolved;         // 170x170
+extern const lv_img_dsc_t sprite_evolved_walk1;
+extern const lv_img_dsc_t sprite_evolved_walk2;
 #ifdef __cplusplus
 }
 #endif

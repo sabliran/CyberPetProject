@@ -24,6 +24,7 @@
 #include "XPowersLib.h"
 #include <esp_timer.h>
 #include <esp_sleep.h>
+#include <ArduinoOTA.h>
 #include "ESP_I2S.h"
 #include "esp_check.h"
 #include "es8311.h"   // codec driver bundled from Waveshare's example 08
@@ -52,6 +53,10 @@ const char* TIMEZONE = "EET-2EEST,M3.5.0/3,M10.5.0/4";
 // ── Board drivers (from Waveshare's 1.75 example 06) ────────────────────────
 static Arduino_DataBus* bus = new Arduino_ESP32QSPI(
     LCD_CS, LCD_SCLK, LCD_SDIO0, LCD_SDIO1, LCD_SDIO2, LCD_SDIO3);
+// Panel stays in native orientation — the CO5300 driver's rotation=2
+// mirrors instead of rotating. The 180° flip (user docks USB-right) is done
+// by LVGL software rotation instead (disp_drv.rotated below): pixel-exact
+// regardless of controller MADCTL quirks.
 static Arduino_CO5300* gfx = new Arduino_CO5300(
     bus, LCD_RESET, 0 /*rotation*/, LCD_WIDTH, LCD_HEIGHT, 6, 0, 0, 0);
 static TouchDrvCST92xx touch;
@@ -130,6 +135,16 @@ static void swStepSample() {
   // user data: 1.7 g caught only 4 of 12 real rows — most swing peaks sit
   // lower, so trigger at 1.35 g (still ~9× walking's ~±150 mg deviations).
   // Only armed while the back screen is in a running session.
+  // Focus guilt-trip: picking the device up during a running focus block
+  // upsets the blob (red arc + "FOCUS!"). Resting |a| is ~1 g; a pickup
+  // deviates well past ±0.35 g. 30 s cooldown so one grab scolds once.
+  static uint32_t lastGuiltMs = 0;
+  if (ui.isFocusRunning() && fabsf(mag - 1.0f) > 0.35f &&
+      nowMs - lastGuiltMs > 30000UL) {
+    lastGuiltMs = nowMs;
+    ui.pomodoroGuiltTrip();
+  }
+
   // Back-workout rep detector: calm-gated spike counting. A rep counts the
   // moment |a| crosses the trigger, but only if the device first spent
   // >= 350 ms continuously below the re-arm level ("calm"). Inside a rep
@@ -294,6 +309,11 @@ static void petSoundCB(int event) {
     case SOUND_HABIT_UNDONE:  // single low blip
       playTone(523.3f, 90, 0.35f);
       break;
+    case SOUND_TROPHY:        // three-note rising fanfare (E5-A5-E6)
+      playTone(659.3f, 80, 0.5f);
+      playTone(880.0f, 80, 0.5f);
+      playTone(1318.5f, 150, 0.5f);
+      break;
   }
 }
 
@@ -307,6 +327,7 @@ RtcTimeKeeper timeKeeper;   // PCF85063 via Wire (started in setup)
 static int  lastResetYear = -1;
 static int  lastResetDOY  = -1;
 static bool ntpEnabled    = false;
+static int  lastTrophyCount = 0;   // for the new-trophy celebration
 
 // Back-workout app: lifetime completed sessions, NVS-backed, reported in
 // sync requests so the server can award back-workout trophies.
@@ -325,6 +346,31 @@ static void pushDoneCB() {
   pushSessions++;
   storage.savePushSessions(pushSessions);
   wifiSync.setPushSessions(pushSessions);
+}
+
+// OTA firmware updates over WiFi (requires the app3M_fat9M_16MB dual-slot
+// partition scheme). Started once WiFi is up — boot-time or the loop's
+// self-healing reconnect. Flash with:
+//   arduino-cli upload -p cyberpet-device.local --fqbn ... CyberPet_1_75B
+// (espota transport; password from secrets.h)
+static bool otaStarted = false;
+
+static void startOtaIfNeeded() {
+  if (otaStarted) return;
+  ArduinoOTA.setHostname("cyberpet-device");
+  ArduinoOTA.setPassword(OTA_PASSWORD_SECRET);
+  ArduinoOTA.onStart([]() {
+    // Persist the lazily-saved state before the app partition is rewritten
+    // (sleep/back/push/focus counters already save at the moment they
+    // change, so only the change-guard-batched ones need a flush).
+    storage.savePet(pet.getState());
+    storage.saveHabits(habits);
+    storage.saveStepState(stepState);
+    Serial.println("OTA: update starting");
+  });
+  ArduinoOTA.begin();
+  otaStarted = true;
+  Serial.println("OTA: ready (cyberpet-device.local)");
 }
 
 // Focus app: completed 25-min blocks, same pattern.
@@ -454,7 +500,10 @@ void setup() {
     Serial.print("touch model: ");
     Serial.println(touch.getModelName());
     touch.setMaxCoordinates(LCD_WIDTH, LCD_HEIGHT);
-    touch.setMirrorXY(true, true);  // panel mounted rotated (example 06)
+    touch.setMirrorXY(true, true);  // native mapping (example 06) — LVGL's
+                                    // disp_drv.rotated transforms pointer
+                                    // input itself; flipping here too would
+                                    // double-flip (inverted swipes)
     attachInterrupt(TP_INT, []() { touchPressed = true; }, FALLING);
   }
 
@@ -568,6 +617,11 @@ void setup() {
   disp_drv.flush_cb   = dispFlushCB;
   disp_drv.rounder_cb = dispRounderCB;
   disp_drv.draw_buf   = &draw_buf;
+  // 180° software rotation: the user docks with USB on the right, which is
+  // upside-down for the panel. LVGL rotates each flushed area itself; the
+  // even/odd rounder stays valid because the panel is 466 px (even) wide.
+  disp_drv.sw_rotate  = 1;
+  disp_drv.rotated    = LV_DISP_ROT_180;
   lv_disp_drv_register(&disp_drv);
 
   static lv_indev_drv_t indev_drv;
@@ -620,6 +674,7 @@ void setup() {
     ui.setQuests(cachedQuests, nq);
     ui.setGoals(cachedGoals, ng);
     ui.setTrophies(cachedTrophies, nt);
+    lastTrophyCount = nt;  // celebration baseline (see applySyncResults)
   }
 
   // PCF85063 RTC — Wire is already running (started above for touch/PMU).
@@ -667,7 +722,19 @@ static void applySyncResults() {
   ui.refreshHabitScreen();
   ui.setQuests(wifiSync.getQuests(), wifiSync.getQuestCount());
   ui.setGoals(wifiSync.getGoals(), wifiSync.getGoalCount());
+  // Sync responses can change pet state directly (dashboard XP deltas,
+  // resets) — without this the stage label/sprite freeze at their last
+  // local-interaction values (seen live: device at blob LV.3, screen stuck
+  // on "egg LV.0" after a reset+restore cycle).
+  ui.refreshPetScreen();
   ui.setTrophies(wifiSync.getTrophies(), wifiSync.getTrophyCount());
+  // New trophy? Celebrate: gold pill + fanfare. Count can also DROP (the
+  // server recomputes live, e.g. after an XP reset) — that's silent.
+  if (wifiSync.getTrophyCount() > lastTrophyCount) {
+    ui.showTrophyPill();
+    petSoundCB(SOUND_TROPHY);
+  }
+  lastTrophyCount = wifiSync.getTrophyCount();
   storage.saveHabits(habits);
   storage.saveQuests(wifiSync.getQuests(), wifiSync.getQuestCount());
   storage.saveGoals(wifiSync.getGoals(), wifiSync.getGoalCount());
@@ -775,10 +842,36 @@ void loop() {
   // ── WiFi sync ─────────────────────────────────────────────────────────────
   if (strlen(WIFI_SSID) > 0) {
     static uint32_t lastSseConnectAttempt = 0;
+    static uint32_t lastWifiKick = 0;
+    bool wifiUp = wifiSync.isConnected();
+
+    // Self-healing: if the AP wasn't up at boot (frequent with this router)
+    // or the link dropped and auto-reconnect gave up, kick a fresh
+    // association every 3 min. Non-blocking; isConnected() sees the result
+    // on later passes.
+    if (!wifiUp && millis() - lastWifiKick > 180000UL) {
+      lastWifiKick = millis();
+      Serial.println("WiFi: link down - retrying association");
+      wifiSync.kickReconnect();
+    }
+
+    if (wifiUp) {
+      startOtaIfNeeded();
+      ArduinoOTA.handle();
+    }
+
+    // One-time online setup that setup() skipped if boot was offline.
+    if (wifiUp && !ntpEnabled) {
+      configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+      setenv("TZ", TIMEZONE, 1);
+      tzset();
+      ntpEnabled = true;
+      Serial.println("WiFi: connected after boot - NTP configured");
+    }
 
     if (wifiSync.isEventStreamConnected()) {
       if (wifiSync.pollEventStream(&pet, &habits)) applySyncResults();
-    } else {
+    } else if (wifiUp) {  // don't hammer HTTP/SSE attempts with no link
       if (millis() - lastConfigCheck > CONFIG_CHECK_MS) {
         lastConfigCheck = millis();
         if (wifiSync.checkConfig(&pet, &habits)) applySyncResults();

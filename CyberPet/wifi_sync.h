@@ -20,6 +20,12 @@ public:
 
   bool isConnected();
 
+  // Non-blocking reconnect kick for the loop's self-healing: restarts the
+  // association with the credentials from begin() and returns immediately;
+  // poll isConnected() on later passes to see if it landed. (begin() itself
+  // blocks up to 15 s, which would freeze the UI if used for retries.)
+  void kickReconnect();
+
   // Call periodically from loop() (respect settings.syncIntervalSeconds,
   // default every 60s - don't hammer the API every loop iteration)
   // Pulls habit/goal/settings changes down, pushes pet state + completions up.
@@ -120,6 +126,8 @@ private:
   // after WiFi connects (plain DNS can't see .local names), and re-resolved
   // after an HTTP connection failure in case the host's DHCP lease moved.
   void resolveServerUrl();
+  String ssid_;                // stored by begin() for kickReconnect()
+  String password_;
   String serverUrlConfigured;  // as passed to begin(); may contain *.local
   bool   mdnsStarted = false;
   String serverUrl;            // resolved form actually used for requests

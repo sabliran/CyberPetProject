@@ -38,8 +38,11 @@ static const int GLOW_PULSE_MS[]  = {2000, 1400, 1100, 850};
 static const int GLOW_BASE_W[]    = {3,    4,   5,   6};  // small blur = soft outer edge
 static const int EXPR_PERIOD_MS[] = {4000, 3000, 2200, 1600}; // expression cycle
 
+// Square eyes (radius 0) to match the pixel-art sprites — the old round
+// eyes looked airbrushed against the chunky body pixels. All the blink /
+// squint animations shrink width/height, which stays crisp on rectangles.
 static void makeCircle(lv_obj_t* obj, lv_color_t color) {
-  lv_obj_set_style_radius(obj, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_radius(obj, 0, 0);
   lv_obj_set_style_bg_color(obj, color, 0);
   lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
   lv_obj_set_style_border_width(obj, 0, 0);
@@ -62,7 +65,9 @@ static void animSetZoom(void* obj, int32_t v) { lv_img_set_zoom((lv_obj_t*)obj, 
 // overflowing zoomed pixels behind. 24 px covers the max puff overflow
 // (170 px sprite * 12.5% / 2 ≈ 11 px) with margin.
 static void blobExtDrawCB(lv_event_t* e) {
-  lv_event_set_ext_draw_size(e, 24);
+  // Must cover the deepest zoom-in (129%) plus the pat puff on top of it
+  // (112% of that ≈ 145%): 170 px sprite * 45% / 2 ≈ 39 px of overflow.
+  lv_event_set_ext_draw_size(e, 48);
 }
 
 // Body sprite per evolution stage (pixel art, body only — eyes on top).
@@ -72,6 +77,17 @@ static const lv_img_dsc_t* stageSprite(int stage) {
     case STAGE_BLOB:     return &sprite_blob;
     case STAGE_CREATURE: return &sprite_creature;
     default:             return &sprite_evolved;
+  }
+}
+
+// Walk frames: the animation alternates left-foot-up / right-foot-up so
+// both legs step. The egg has no legs and glides on its single frame.
+static const lv_img_dsc_t* stageWalkSprite(int stage, bool rightFoot) {
+  switch (stage) {
+    case STAGE_EGG:      return &sprite_egg;
+    case STAGE_BLOB:     return rightFoot ? &sprite_blob_walk2     : &sprite_blob_walk1;
+    case STAGE_CREATURE: return rightFoot ? &sprite_creature_walk2 : &sprite_creature_walk1;
+    default:             return rightFoot ? &sprite_evolved_walk2  : &sprite_evolved_walk1;
   }
 }
 static void animSetGlow(void* obj, int32_t v) {
@@ -108,7 +124,22 @@ static void roamArrivalCB(lv_anim_t* a) {
   self->startIdleWobble();
 }
 
+// Current depth zoom (256 = 100%), mirrored here so placeEye can scale the
+// eyes with the body: image zoom only scales the bitmap, not child objects.
+static int g_depthZoom = 256;
+
+// Eye dimensions snap to the sprites' 5 px pixel grid so every expression
+// (squint, surprise, blink) stays chunky pixel-art instead of smoothly
+// interpolated. A closed-eye blink becomes a one-sprite-pixel bar.
+// Everything scales by the depth zoom so the eyes shrink/grow (and stay on
+// the face) as the pet wanders nearer or farther.
 static void placeEye(lv_obj_t* eye, lv_coord_t cx, lv_coord_t cy, int w, int h) {
+  cx = cx * g_depthZoom / 256;
+  cy = cy * g_depthZoom / 256;
+  w  = w  * g_depthZoom / 256;
+  h  = h  * g_depthZoom / 256;
+  w = LV_MAX(5, (w / 5) * 5);
+  h = LV_MAX(5, (h / 5) * 5);
   lv_obj_set_size(eye, w, h);
   lv_obj_align(eye, LV_ALIGN_CENTER, cx, cy);
 }
@@ -120,6 +151,8 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   tracker  = trackerPtr;
   roamTimer = nullptr;
   blinkTimer = nullptr;
+  walkAnimTimer = nullptr; walkFrameB = false;
+  depthZoom = 256; g_depthZoom = 256;
   sedentaryActive  = false;
   sedentaryTimer   = nullptr;
   batteryPct       = -1;
@@ -184,6 +217,20 @@ void PetUI::buildPetScreen() {
   eyeRight = lv_obj_create(blobShape);
   makeCircle(eyeLeft,  lv_color_hex(0x0A0A0A));
   makeCircle(eyeRight, lv_color_hex(0x0A0A0A));
+  // One light glint pixel per eye (top-left, one sprite-pixel of 5 px):
+  // the detail that makes a black rectangle read as a drawn pixel eye.
+  // Children clip to the eye, so blinks/squints swallow it naturally.
+  for (lv_obj_t* eye : { eyeLeft, eyeRight }) {
+    lv_obj_t* glint = lv_obj_create(eye);
+    lv_obj_set_size(glint, 5, 5);
+    lv_obj_set_style_radius(glint, 0, 0);
+    lv_obj_set_style_bg_color(glint, lv_color_hex(0xD8DEE8), 0);
+    lv_obj_set_style_bg_opa(glint, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(glint, 0, 0);
+    lv_obj_set_style_pad_all(glint, 0, 0);
+    lv_obj_clear_flag(glint, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(glint, LV_ALIGN_TOP_LEFT, 0, 0);
+  }
 
   stageLabel = lv_label_create(petScreen);
   lv_obj_align(stageLabel, LV_ALIGN_CENTER, 0, 60);
@@ -529,12 +576,12 @@ void PetUI::blobLoveReaction() {
   // buffer exhausts LVGL's memory pool and crashes the device.
   lv_coord_t sz = stageSize(pet->getStage());
   lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetZoom);
-  lv_img_set_zoom(blobShape, 256);  // snap back to base before re-puffing
+  lv_img_set_zoom(blobShape, depthZoom);  // snap back to resting depth before re-puffing
   lv_anim_t a;
   lv_anim_init(&a);
   lv_anim_set_var(&a, blobShape);
   lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetZoom);
-  lv_anim_set_values(&a, 256, 288);  // ~112% puff, same feel as the old +sz/8
+  lv_anim_set_values(&a, depthZoom, depthZoom * 112 / 100);  // ~112% puff at any depth
   lv_anim_set_time(&a, 120);
   lv_anim_set_playback_time(&a, 260);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
@@ -673,9 +720,9 @@ void PetUI::refreshPetScreen() {
   lv_obj_set_style_shadow_opa(blobShape, LV_OPA_TRANSP, 0);
 
   // Eye layout (relative to current blob size)
-  eyeOffX  = sz * 3 / 10;
+  eyeOffX  = sz / 5;  // was sz*3/10 — closer-set eyes suit the sprite faces
   eyeOffY  = -(sz / 10);
-  eyeBaseW = sz / 5;
+  eyeBaseW = sz / 8;  // was sz/5 — smaller suits the pixel-art faces
 
   applyMoodExpression();
   startBlobAnimations();
@@ -764,11 +811,13 @@ void PetUI::roamToRandom() {
   lv_coord_t pW = lv_obj_get_width(petScreen);
   lv_coord_t pH = lv_obj_get_height(petScreen);
 
-  // Cancel squash/stretch and reset to normal size before starting new roam
+  // Cancel squash/stretch and settle at the current depth before roaming
   lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetX);
   lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetY);
   lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetZoom);
-  lv_img_set_zoom(blobShape, 256);
+  lv_anim_del(this,      (lv_anim_exec_xcb_t)animSetDepth);
+  lv_img_set_zoom(blobShape, depthZoom);
+  g_depthZoom = depthZoom;
   lv_obj_set_size(blobShape, sz, sz);
   if (blobBaseX >= 0) lv_obj_set_pos(blobShape, blobBaseX, blobBaseY);
 
@@ -786,13 +835,20 @@ void PetUI::roamToRandom() {
   blobBaseX = targetX;
   blobBaseY = targetY;
 
-  // Eye drift: shift eyes slightly toward the direction of movement
+  // Depth: each roam also picks how near/far the pet ends up (image zoom,
+  // 66%..129%). Coming in close = walking toward the viewer.
+  int targetDepth = 170 + rand() % 160;
+
+  // Eye drift: shift eyes toward the direction of movement — unless the
+  // pet is coming up close, in which case it looks straight at the viewer.
   int dx = targetX - curX;
   int dy = targetY - curY;
   int absDx = dx < 0 ? -dx : dx;
   int absDy = dy < 0 ? -dy : dy;
   int dist  = absDx + absDy;
-  if (dist > 4) {
+  if (targetDepth >= 280) {
+    eyeDriftX = eyeDriftY = 0;   // looking at you
+  } else if (dist > 4) {
     eyeDriftX = (lv_coord_t)(dx * 7 / dist);
     eyeDriftY = (lv_coord_t)(dy * 7 / dist);
   } else {
@@ -800,20 +856,22 @@ void PetUI::roamToRandom() {
   }
   applyMoodExpression();
 
-  // In-flight zoom swell (was a directional W/H stretch on the old circle
-  // blob — NEVER resize an lv_img widget: v8 tiles the bitmap to fill a
-  // larger box, drawing a second copy of the sprite).
+  // Depth glide: zoom eases from the current depth to the new one over the
+  // whole travel (replaces the old in-flight swell — the depth change IS
+  // the size dynamic now). animSetDepth also rescales the eyes each frame.
+  // (NEVER resize an lv_img widget: v8 tiles the bitmap to fill a larger
+  // box, drawing a second copy of the sprite.)
   int travelMs = ROAM_TRAVEL_MS[stage];
   lv_anim_t a;
 
   lv_anim_init(&a);
-  lv_anim_set_var(&a, blobShape);
-  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetZoom);
-  lv_anim_set_values(&a, 256, 276);  // ~108% swell while traveling
-  lv_anim_set_time(&a, travelMs * 3 / 5);
-  lv_anim_set_playback_time(&a, travelMs * 2 / 5);
+  lv_anim_set_var(&a, this);
+  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetDepth);
+  lv_anim_set_values(&a, depthZoom, targetDepth);
+  lv_anim_set_time(&a, travelMs);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
   lv_anim_start(&a);
+  depthZoom = targetDepth;  // resting depth once the glide lands
 
   // Glide X
   lv_anim_init(&a);
@@ -834,15 +892,42 @@ void PetUI::roamToRandom() {
   lv_anim_set_ready_cb(&a, roamArrivalCB);
   lv_anim_set_user_data(&a, this);
   lv_anim_start(&a);
+
+  // Walk cycle while traveling: flip between the base and alternate-feet
+  // frames. Killed on arrival (startIdleWobble restores the base frame).
+  if (walkAnimTimer) { lv_timer_del(walkAnimTimer); walkAnimTimer = nullptr; }
+  walkFrameB = false;
+  walkAnimTimer = lv_timer_create(walkFrameCB, 160, this);
+}
+
+void PetUI::animSetDepth(void* petui, int32_t v) {
+  PetUI* self = (PetUI*)petui;
+  g_depthZoom = (int)v;
+  lv_img_set_zoom(self->blobShape, (uint16_t)v);
+  self->applyMoodExpression();   // keep the eyes glued to the scaling face
+}
+
+void PetUI::walkFrameCB(lv_timer_t* t) {
+  PetUI* self = (PetUI*)t->user_data;
+  int stage = self->pet->getStage();
+  self->walkFrameB = !self->walkFrameB;
+  lv_img_set_src(self->blobShape, stageWalkSprite(stage, self->walkFrameB));
 }
 
 void PetUI::startIdleWobble() {
   int stage = pet->getStage();
   int sz    = stageSize(stage);
 
-  // Ensure zoom is reset to normal in case a previous anim didn't finish
+  // Landed: stop the walk cycle on the base frame.
+  if (walkAnimTimer) { lv_timer_del(walkAnimTimer); walkAnimTimer = nullptr; }
+  walkFrameB = false;
+  lv_img_set_src(blobShape, stageSprite(stage));
+
+  // Settle at the roam's resting depth in case an anim didn't finish
   lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetZoom);
-  lv_img_set_zoom(blobShape, 256);
+  lv_anim_del(this,      (lv_anim_exec_xcb_t)animSetDepth);
+  lv_img_set_zoom(blobShape, depthZoom);
+  g_depthZoom = depthZoom;
   lv_obj_set_size(blobShape, sz, sz);
   lv_obj_set_pos(blobShape, blobBaseX, blobBaseY);
 
@@ -858,7 +943,7 @@ void PetUI::startIdleWobble() {
   lv_anim_init(&a);
   lv_anim_set_var(&a, blobShape);
   lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetZoom);
-  lv_anim_set_values(&a, 256, 216);  // ~85% dip
+  lv_anim_set_values(&a, depthZoom, depthZoom * 84 / 100);  // ~85% dip at any depth
   lv_anim_set_time(&a, 130);
   lv_anim_set_playback_time(&a, 210);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
@@ -1227,6 +1312,48 @@ void PetUI::showLevelUpPill(int level) {
   lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetOpa);
   lv_anim_set_values(&a, LV_OPA_COVER, LV_OPA_TRANSP);
   lv_anim_set_delay(&a, 700);
+  lv_anim_set_time(&a, 900);
+  lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
+  lv_anim_start(&a);
+}
+
+void PetUI::showTrophyPill() {
+  // Same construction as showLevelUpPill, gold trophy edition.
+  lv_obj_t* pill = lv_obj_create(lv_layer_top());
+  lv_obj_set_size(pill, 190, 44);
+  lv_obj_set_style_bg_color(pill, lv_color_hex(0x1A1200), 0);
+  lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(pill, 22, 0);
+  lv_obj_set_style_border_color(pill, lv_color_hex(0xFFD060), 0);
+  lv_obj_set_style_border_width(pill, 2, 0);
+  lv_obj_set_style_pad_all(pill, 0, 0);
+  lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+  lv_coord_t px = 233 - 95;
+  lv_coord_t py = 150;
+  lv_obj_set_pos(pill, px, py);
+
+  lv_obj_t* lbl = lv_label_create(pill);
+  lv_label_set_text(lbl, LV_SYMBOL_OK " NEW TROPHY!");
+  lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFD060), 0);
+  lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+  lv_obj_center(lbl);
+
+  lv_anim_t a;
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, pill);
+  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetY);
+  lv_anim_set_values(&a, py, py - 70);
+  lv_anim_set_time(&a, 1800);
+  lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+  lv_anim_set_ready_cb(&a, xpPopupDeleteCB);
+  lv_anim_set_user_data(&a, pill);
+  lv_anim_start(&a);
+
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, pill);
+  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetOpa);
+  lv_anim_set_values(&a, LV_OPA_COVER, LV_OPA_TRANSP);
+  lv_anim_set_delay(&a, 900);
   lv_anim_set_time(&a, 900);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
   lv_anim_start(&a);

@@ -70,6 +70,7 @@ struct TrophyInfo {
 enum PetSoundEvent {
   SOUND_HABIT_DONE = 0,
   SOUND_HABIT_UNDONE,
+  SOUND_TROPHY,        // new trophy arrived in a sync — little fanfare
 };
 typedef void (*PetSoundCB)(int event);
 
@@ -116,6 +117,12 @@ public:
 
   void showPomodoroScreen();
   void pomodoroGuiltTrip();   // hook for IMU "picked up during focus" guilt-trip
+  // True while a focus block is actively running — the sketch's IMU sampler
+  // uses this to fire the guilt-trip when the device is picked up.
+  bool isFocusRunning() const { return pomRunning && pomState == POM_FOCUS; }
+  // Gold celebration pill; the sketch calls this when a sync brings a trophy
+  // count higher than the last known one.
+  void showTrophyPill();
   void sedentaryNudge();       // trigger sedentary state (also called by sim `s` key)
   void updateBattery(int pct, bool charging = false); // pct 0-100; -1 = unknown; call periodically from loop()
   void updateClock(int hour, int minute); // pet-screen clock; hidden until first call (sketch gates on clock validity)
@@ -218,6 +225,9 @@ private:
   lv_timer_t* exprTimer;
   lv_timer_t* roamTimer;
   lv_timer_t* blinkTimer;
+  lv_timer_t* walkAnimTimer;   // flips walk frames while gliding; null when idle
+  bool        walkFrameB;
+  int         depthZoom;       // resting image zoom (256 = 100%); roams pick a new depth
 
   // habit screen widgets
   lv_obj_t* habitList;
@@ -365,6 +375,8 @@ private:
   static void revertExprCB(lv_timer_t* t);
   static void roamTimerCB(lv_timer_t* t);
   static void blinkTimerCB(lv_timer_t* t);
+  static void walkFrameCB(lv_timer_t* t);
+  static void animSetDepth(void* petui, int32_t v);  // zoom + eye rescale per frame
   static void habitButtonEventCB(lv_event_t* e);
   // Gesture navigation: pet screen is the hub. Swipe left = habits,
   // up = workout, down = focus; the opposite swipe exits back to the pet.

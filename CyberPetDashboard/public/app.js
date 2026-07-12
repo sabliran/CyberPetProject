@@ -114,10 +114,27 @@ function habitRow(habit) {
   return li;
 }
 
+// Mirrors MAX_HABITS in the firmware's habits.h — the device silently shows
+// only the first N active habits, which once ate a habit without a trace.
+const DEVICE_HABIT_SLOTS = 16;
+
 async function loadHabits() {
   const habits = await api('/habits');
   const list = document.getElementById('habitList');
   list.innerHTML = '';
+
+  let warn = document.getElementById('habitCapWarn');
+  if (habits.length > DEVICE_HABIT_SLOTS) {
+    if (!warn) {
+      warn = document.createElement('div');
+      warn.id = 'habitCapWarn';
+      warn.style.cssText = 'color:#FFD060;font-size:13px;margin:0 0 8px;';
+      list.parentNode.insertBefore(warn, list);
+    }
+    warn.textContent = `⚠ ${habits.length} active habits — the device only holds ${DEVICE_HABIT_SLOTS}; the rest won't appear on it.`;
+  } else if (warn) {
+    warn.remove();
+  }
   if (habits.length === 0) {
     list.innerHTML = '<li class="itemlist__empty">No habits yet — add one below.</li>';
   } else {
