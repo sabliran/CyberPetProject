@@ -18,9 +18,11 @@
 #include "wifi_sync.h"
 #include "timekeeping.h"
 
-// --- Fill these in, or leave WIFI_SSID empty to run fully standalone ---
-const char* WIFI_SSID     = "REDACTED_WIFI_SSID";
-const char* WIFI_PASSWORD = "REDACTED_WIFI_PASSWORD";
+// WiFi credentials live in the gitignored secrets.h (copy secrets.h.example).
+// Leave WIFI_SSID_SECRET empty there to run fully standalone.
+#include "secrets.h"
+const char* WIFI_SSID     = WIFI_SSID_SECRET;
+const char* WIFI_PASSWORD = WIFI_PASSWORD_SECRET;
 // *.local hostnames are resolved via mDNS after WiFi connects, so this stays
 // valid when the host's DHCP address changes (was http://192.168.1.8:8090).
 const char* DASHBOARD_URL = "http://omarchy.local:8090";
