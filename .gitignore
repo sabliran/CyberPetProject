@@ -12,3 +12,4 @@ node_modules/
 # WiFi credentials (see secrets.h.example)
 CyberPet_1_75B/secrets.h
 CyberPet_1_43C/secrets.h
+__pycache__/
