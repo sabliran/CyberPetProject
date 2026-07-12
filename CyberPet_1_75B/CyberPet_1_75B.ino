@@ -316,6 +316,24 @@ static void backDoneCB() {
   wifiSync.setBackSessions(backSessions);
 }
 
+// Push-up app: same pattern.
+static uint32_t pushSessions = 0;
+
+static void pushDoneCB() {
+  pushSessions++;
+  storage.savePushSessions(pushSessions);
+  wifiSync.setPushSessions(pushSessions);
+}
+
+// Focus app: completed 25-min blocks, same pattern.
+static uint32_t focusSessions = 0;
+
+static void focusDoneCB() {
+  focusSessions++;
+  storage.saveFocusSessions(focusSessions);
+  wifiSync.setFocusSessions(focusSessions);
+}
+
 // Sleep app: once-per-day gate, NVS-backed. The UI applies the pet effects
 // and fires this callback; we stamp today's date and persist both.
 static SleepState sleepState;
@@ -582,6 +600,12 @@ void setup() {
   ui.setBackDoneCallback(backDoneCB);
   backSessions = storage.loadBackSessions();
   wifiSync.setBackSessions(backSessions);
+  ui.setPushDoneCallback(pushDoneCB);
+  pushSessions = storage.loadPushSessions();
+  wifiSync.setPushSessions(pushSessions);
+  ui.setFocusDoneCallback(focusDoneCB);
+  focusSessions = storage.loadFocusSessions();
+  wifiSync.setFocusSessions(focusSessions);
   // Restore the last-synced quest/goal lists from NVS so they don't
   // vanish on reboot while waiting for the next sync.
   {

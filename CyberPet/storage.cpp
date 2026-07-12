@@ -183,3 +183,21 @@ void Storage::saveBackSessions(uint32_t n) {
 uint32_t Storage::loadBackSessions() {
   return prefs.getUInt("back_sessions", 0);
 }
+
+void Storage::savePushSessions(uint32_t n) {
+  if (loadPushSessions() == n) return;
+  prefs.putUInt("push_sessions", n);
+}
+
+uint32_t Storage::loadPushSessions() {
+  return prefs.getUInt("push_sessions", 0);
+}
+
+void Storage::saveFocusSessions(uint32_t n) {
+  if (loadFocusSessions() == n) return;
+  prefs.putUInt("focus_sessions", n);
+}
+
+uint32_t Storage::loadFocusSessions() {
+  return prefs.getUInt("focus_sessions", 0);
+}

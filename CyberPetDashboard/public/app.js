@@ -545,6 +545,8 @@ async function loadHistory() {
   ]);
   renderHeatmap(heatmap);
   renderStreaks(streaks);
+  document.getElementById('historyStats').innerHTML =
+    nextTrophyLine(await getTrophies(), 'habits');
 }
 
 document.querySelectorAll('.history-range-btn').forEach(btn => {
@@ -559,6 +561,25 @@ document.querySelectorAll('.history-range-btn').forEach(btn => {
 // ---- Walking analytics -----------------------------------------------------
 
 function walkDateKey(d) { return d.toISOString().slice(0, 10); }
+
+// Shared by every panel's "next trophy" line. Trophies carry cur/target from
+// the server; the closest unearned one in the category is the next to chase.
+// Short cache so one refresh cycle doesn't hit /api/trophies six times.
+let _trophyCache = { at: 0, data: null };
+async function getTrophies() {
+  if (!_trophyCache.data || Date.now() - _trophyCache.at > 5000) {
+    _trophyCache = { at: Date.now(), data: await api('/trophies') };
+  }
+  return _trophyCache.data;
+}
+
+function nextTrophyLine(trophies, cat) {
+  const cands = trophies.filter(t => t.cat === cat && !t.earned && t.target > 0);
+  if (!cands.length) return `<span>all trophies earned here</span>`;
+  cands.sort((a, b) => b.cur / b.target - a.cur / a.target);
+  const t = cands[0];
+  return `<span>next trophy: <b>${escapeHtml(t.name)}</b> (${t.cur.toLocaleString()}/${t.target.toLocaleString()})</span>`;
+}
 
 async function loadWalking() {
   const { goal, strideCm, history } = await api('/steps');
@@ -605,7 +626,8 @@ async function loadWalking() {
   document.getElementById('walkStats').innerHTML = `
     <span><b>${(weekSteps * strideCm / 100000).toFixed(1)} km</b> last 7 days</span>
     <span><b>${best.steps.toLocaleString()}</b> best day${best.key ? ` (${best.key})` : ''}</span>
-    <span><b>${goalDays30}</b> goal day${goalDays30 === 1 ? '' : 's'} last 30</span>`;
+    <span><b>${goalDays30}</b> goal day${goalDays30 === 1 ? '' : 's'} last 30</span>` +
+    nextTrophyLine(await getTrophies(), 'walking');
 }
 
 // ---- Sleep history ----------------------------------------------------------
@@ -647,7 +669,117 @@ async function loadSleep() {
     <span><b class="sleep-q--0">${counts[0]}</b> good</span>
     <span><b class="sleep-q--1">${counts[1]}</b> medium</span>
     <span><b class="sleep-q--2">${counts[2]}</b> bad</span>
-    <span>last 30 nights</span>`;
+    <span>last 30 nights</span>` +
+    nextTrophyLine(await getTrophies(), 'sleep');
+}
+
+// ---- Back workouts -----------------------------------------------------------
+
+async function loadBackWorkouts() {
+  const { total, history } = await api('/backworkouts');
+  const now = new Date();
+  const todayKey = walkDateKey(now);
+
+  const summary = document.getElementById('backSummary');
+  const todayCount = history[todayKey] || 0;
+  const dates = Object.keys(history).sort();
+  summary.innerHTML = `<b class="back-num">${total}</b> session${total === 1 ? '' : 's'} total` +
+    (todayCount ? `  ·  <b class="back-num">${todayCount}</b> today` : '') +
+    (!todayCount && dates.length ? `  ·  last: ${dates[dates.length - 1]}` : '');
+
+  // Last 14 days, one block per day (same strip layout as sleep).
+  const days = document.getElementById('backDays');
+  days.innerHTML = '';
+  for (let i = 13; i >= 0; i--) {
+    const key = walkDateKey(new Date(now.getTime() - i * 864e5));
+    const n = history[key] || 0;
+    const dot = document.createElement('div');
+    dot.className = `sleep-dot${n > 0 ? ' back-dot--done' : ''}`;
+    dot.title = `${key}: ${n} session${n === 1 ? '' : 's'}`;
+    days.appendChild(dot);
+  }
+
+  // 30-day tally + next trophy progress (thresholds mirror computeTrophies).
+  const cutoff30 = walkDateKey(new Date(now.getTime() - 29 * 864e5));
+  let last30 = 0;
+  for (const [key, n] of Object.entries(history)) if (key >= cutoff30) last30 += n;
+  const trophies = await getTrophies();
+  const backNext = trophies.filter(t => t.id.startsWith('back-') && !t.earned)
+                           .sort((a, b) => a.target - b.target)[0];
+  document.getElementById('backStats').innerHTML = `
+    <span><b>${last30}</b> last 30 days</span>` +
+    (backNext ? `<span>next trophy: <b>${escapeHtml(backNext.name)}</b> (${backNext.cur}/${backNext.target})</span>`
+              : `<span>all back trophies earned</span>`);
+}
+
+// ---- Push-ups ----------------------------------------------------------------
+
+async function loadPushUps() {
+  const { total, history } = await api('/pushups');
+  const now = new Date();
+  const todayKey = walkDateKey(now);
+
+  const summary = document.getElementById('pushSummary');
+  const todayCount = history[todayKey] || 0;
+  const dates = Object.keys(history).sort();
+  summary.innerHTML = `<b class="push-num">${total}</b> session${total === 1 ? '' : 's'} total` +
+    (todayCount ? `  ·  <b class="push-num">${todayCount}</b> today` : '') +
+    (!todayCount && dates.length ? `  ·  last: ${dates[dates.length - 1]}` : '');
+
+  const days = document.getElementById('pushDays');
+  days.innerHTML = '';
+  for (let i = 13; i >= 0; i--) {
+    const key = walkDateKey(new Date(now.getTime() - i * 864e5));
+    const n = history[key] || 0;
+    const dot = document.createElement('div');
+    dot.className = `sleep-dot${n > 0 ? ' push-dot--done' : ''}`;
+    dot.title = `${key}: ${n} session${n === 1 ? '' : 's'}`;
+    days.appendChild(dot);
+  }
+
+  const cutoff30 = walkDateKey(new Date(now.getTime() - 29 * 864e5));
+  let last30 = 0;
+  for (const [key, n] of Object.entries(history)) if (key >= cutoff30) last30 += n;
+  const trophies = await getTrophies();
+  const boopNext = trophies.filter(t => t.id.startsWith('boop-') && !t.earned)
+                           .sort((a, b) => a.target - b.target)[0];
+  document.getElementById('pushStats').innerHTML = `
+    <span><b>${last30}</b> last 30 days</span>` +
+    (boopNext ? `<span>next trophy: <b>${escapeHtml(boopNext.name)}</b> (${boopNext.cur}/${boopNext.target})</span>`
+              : `<span>all push-up trophies earned</span>`);
+}
+
+// ---- Focus blocks --------------------------------------------------------------
+
+async function loadFocus() {
+  const { total, history } = await api('/focus');
+  const now = new Date();
+  const todayKey = walkDateKey(now);
+
+  const summary = document.getElementById('focusSummary');
+  const todayCount = history[todayKey] || 0;
+  const dates = Object.keys(history).sort();
+  summary.innerHTML = `<b class="focus-num">${total}</b> block${total === 1 ? '' : 's'} total` +
+    (todayCount ? `  ·  <b class="focus-num">${todayCount}</b> today` : '') +
+    (!todayCount && dates.length ? `  ·  last: ${dates[dates.length - 1]}` : '');
+
+  const days = document.getElementById('focusDays');
+  days.innerHTML = '';
+  for (let i = 13; i >= 0; i--) {
+    const key = walkDateKey(new Date(now.getTime() - i * 864e5));
+    const n = history[key] || 0;
+    const dot = document.createElement('div');
+    dot.className = `sleep-dot${n > 0 ? ' focus-dot--done' : ''}`;
+    dot.title = `${key}: ${n} block${n === 1 ? '' : 's'}`;
+    days.appendChild(dot);
+  }
+
+  const cutoff30 = walkDateKey(new Date(now.getTime() - 29 * 864e5));
+  let last30 = 0;
+  for (const [key, n] of Object.entries(history)) if (key >= cutoff30) last30 += n;
+  document.getElementById('focusStats').innerHTML = `
+    <span><b>${last30}</b> last 30 days</span><span><b>${(last30 * 25 / 60).toFixed(1)} h</b> focused</span>` +
+    nextTrophyLine(await getTrophies(), 'focus');
 }
 
 // ---- Trophies ----------------------------------------------------------------
@@ -656,6 +788,7 @@ const TROPHY_CATS = [
   ['habits',   'Habits'],
   ['strength', 'Strength'],
   ['walking',  'Walking'],
+  ['focus',    'Focus'],
   ['sleep',    'Sleep'],
   ['pet',      'Pet'],
 ];
@@ -727,7 +860,7 @@ function flashPushed() {
 // ---- Boot -----------------------------------------------------------------
 
 async function refreshAll() {
-  await Promise.all([loadPet(), loadHabits(), loadGoals(), loadQuests(), loadSettings(), loadHistory(), loadWalking(), loadSleep(), loadTrophies()]);
+  await Promise.all([loadPet(), loadHabits(), loadGoals(), loadQuests(), loadSettings(), loadHistory(), loadWalking(), loadSleep(), loadBackWorkouts(), loadPushUps(), loadFocus(), loadTrophies()]);
 }
 
 refreshAll();
@@ -736,3 +869,6 @@ setInterval(loadPet, 15000);
 // panels fresh on the same cadence as the pet card.
 setInterval(loadWalking, 15000);
 setInterval(loadSleep, 15000);
+setInterval(loadBackWorkouts, 15000);
+setInterval(loadPushUps, 15000);
+setInterval(loadFocus, 15000);

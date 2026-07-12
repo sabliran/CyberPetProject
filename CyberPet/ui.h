@@ -38,7 +38,7 @@ struct GoalInfo {
 // Trophies are dashboard-owned and read-only on the device, same contract
 // as quests/goals: the sync response's `trophies` array (earned names only,
 // computed server-side from history) is copied here for display.
-#define MAX_TROPHIES     36   // >= total defined server-side (34 as of July 2026)
+#define MAX_TROPHIES     44   // >= total defined server-side (40 as of July 2026)
 #define TROPHY_NAME_LEN  40
 
 // Back-workout app tuning: reps are counted by the board's IMU on wide
@@ -46,6 +46,11 @@ struct GoalInfo {
 // feeds the blob and pays BACK_XP.
 #define BACK_TARGET_REPS 10
 #define BACK_XP          15
+
+// Push-up app: reps are nose-taps on the screen (any tap while running);
+// same reward shape as the back workout.
+#define PUSH_TARGET_REPS 10
+#define PUSH_XP          15
 
 struct TrophyInfo {
   char name[TROPHY_NAME_LEN];
@@ -85,6 +90,12 @@ typedef void (*PocketModeCB)(void);
 // counter, persists it, and reports it in sync requests so the server can
 // award back-workout trophies.
 typedef void (*BackDoneCB)(void);
+
+// Push-up app: same contract as BackDoneCB, for the push-up session counter.
+typedef void (*PushDoneCB)(void);
+
+// Focus app: fired when a 25-minute focus block completes (after XP award).
+typedef void (*FocusDoneCB)(void);
 
 class PetUI {
 public:
@@ -144,6 +155,12 @@ public:
   void addBackRep();
   bool isBackRunning() const { return backRunning; }
   void setBackDoneCallback(BackDoneCB cb) { backDoneCB = cb; }
+
+  // Push-up app: rep counting is pure touch (nose-taps), so the UI owns it
+  // entirely; the sketch only registers the session-done callback.
+  void showPushScreen();
+  void setPushDoneCallback(PushDoneCB cb) { pushDoneCB = cb; }
+  void setFocusDoneCallback(FocusDoneCB cb) { focusDoneCB = cb; }
 
   // Trophy screen (apps menu). Same sync contract as quests/goals:
   // call setTrophies after every successful sync.
@@ -229,6 +246,17 @@ private:
   bool       backRunning;
   BackDoneCB backDoneCB = nullptr;  // deliberately NOT reset in init()
 
+  // push-up screen widgets + state
+  lv_obj_t*  pushScreen;
+  lv_obj_t*  pushRepLabel;
+  lv_obj_t*  pushHintLabel;
+  lv_obj_t*  pushBtnLabel;
+  int        pushReps;
+  bool       pushRunning;
+  uint32_t   lastPushTapMs;         // debounce for nose taps
+  PushDoneCB pushDoneCB = nullptr;  // deliberately NOT reset in init()
+  FocusDoneCB focusDoneCB = nullptr;  // deliberately NOT reset in init()
+
   // trophy screen widgets + data
   lv_obj_t*   trophyScreen;
   lv_obj_t*   trophyList;
@@ -307,6 +335,7 @@ private:
   void refreshGoalScreen();
   void buildAppsScreen();
   void buildBackScreen();
+  void buildPushScreen();
   void buildTrophyScreen();
   void refreshTrophyScreen();
   void buildSleepScreen();
@@ -353,6 +382,10 @@ private:
   static void backBtnCB(lv_event_t* e);
   static void backGestureCB(lv_event_t* e);
   static void backDoneTimerCB(lv_timer_t* t);
+  static void pushBtnCB(lv_event_t* e);
+  static void pushTapCB(lv_event_t* e);
+  static void pushGestureCB(lv_event_t* e);
+  static void pushDoneTimerCB(lv_timer_t* t);
   static void sleepBtnCB(lv_event_t* e);
   static void sleepGestureCB(lv_event_t* e);
   static void sleepReturnTimerCB(lv_timer_t* t);

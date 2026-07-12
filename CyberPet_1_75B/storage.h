@@ -75,6 +75,14 @@ public:
   void saveBackSessions(uint32_t n);
   uint32_t loadBackSessions();
 
+  // Push-up app: same contract.
+  void savePushSessions(uint32_t n);
+  uint32_t loadPushSessions();
+
+  // Focus app: lifetime completed 25-min blocks.
+  void saveFocusSessions(uint32_t n);
+  uint32_t loadFocusSessions();
+
 private:
   Preferences prefs;
 };

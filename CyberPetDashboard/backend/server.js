@@ -439,7 +439,7 @@ const WALK_STRIDE_CM  = 70;
 const STEP_HISTORY_DAYS = 90;
 
 app.post('/api/sync', (req, res) => {
-  const { deviceId, petState, completedHabits, steps, sleep, backSessions } = req.body;
+  const { deviceId, petState, completedHabits, steps, sleep, backSessions, pushSessions, focusSessions } = req.body;
   // Use the server's local date as the canonical completion date.
   // Device and server clocks may disagree slightly around midnight — the server
   // date is always preferred so history records are consistent.
@@ -498,9 +498,46 @@ app.post('/api/sync', (req, res) => {
       for (const k of Object.keys(d.sleepHistory)) if (k < cutoff) delete d.sleepHistory[k];
     }
     // Back-workout lifetime sessions: monotonic max (a device NVS wipe can
-    // never claw back earned trophies).
+    // never claw back earned trophies). The increment since last sync is
+    // credited to the device's calendar date (fall back to server date) so
+    // the dashboard can show per-day workout history.
     if (typeof backSessions === 'number' && backSessions > (d.backSessions || 0)) {
+      const delta = backSessions - (d.backSessions || 0);
       d.backSessions = backSessions;
+      let key = todayDate;
+      if (steps && steps.year >= 2020 && steps.dayOfYear >= 1 && steps.dayOfYear <= 366) {
+        key = new Date(Date.UTC(steps.year, 0, steps.dayOfYear)).toISOString().slice(0, 10);
+      }
+      d.backHistory = d.backHistory || {};
+      d.backHistory[key] = (d.backHistory[key] || 0) + delta;
+      const cutoff = new Date(Date.now() - STEP_HISTORY_DAYS * 864e5).toISOString().slice(0, 10);
+      for (const k of Object.keys(d.backHistory)) if (k < cutoff) delete d.backHistory[k];
+    }
+    // Push-up sessions: identical bookkeeping.
+    if (typeof pushSessions === 'number' && pushSessions > (d.pushSessions || 0)) {
+      const delta = pushSessions - (d.pushSessions || 0);
+      d.pushSessions = pushSessions;
+      let key = todayDate;
+      if (steps && steps.year >= 2020 && steps.dayOfYear >= 1 && steps.dayOfYear <= 366) {
+        key = new Date(Date.UTC(steps.year, 0, steps.dayOfYear)).toISOString().slice(0, 10);
+      }
+      d.pushHistory = d.pushHistory || {};
+      d.pushHistory[key] = (d.pushHistory[key] || 0) + delta;
+      const cutoff = new Date(Date.now() - STEP_HISTORY_DAYS * 864e5).toISOString().slice(0, 10);
+      for (const k of Object.keys(d.pushHistory)) if (k < cutoff) delete d.pushHistory[k];
+    }
+    // Focus blocks (25-min pomodoros): identical bookkeeping.
+    if (typeof focusSessions === 'number' && focusSessions > (d.focusSessions || 0)) {
+      const delta = focusSessions - (d.focusSessions || 0);
+      d.focusSessions = focusSessions;
+      let key = todayDate;
+      if (steps && steps.year >= 2020 && steps.dayOfYear >= 1 && steps.dayOfYear <= 366) {
+        key = new Date(Date.UTC(steps.year, 0, steps.dayOfYear)).toISOString().slice(0, 10);
+      }
+      d.focusHistory = d.focusHistory || {};
+      d.focusHistory[key] = (d.focusHistory[key] || 0) + delta;
+      const cutoff = new Date(Date.now() - STEP_HISTORY_DAYS * 864e5).toISOString().slice(0, 10);
+      for (const k of Object.keys(d.focusHistory)) if (k < cutoff) delete d.focusHistory[k];
     }
   });
   res.json({
@@ -575,6 +612,8 @@ function computeTrophies(d) {
 
   const questDone = (d.quests || []).some(q => q.done);
   const daysAlive = (d.petState && d.petState.daysAlive) || 0;
+  const maxSteps  = stepVals.length ? Math.max(...stepVals) : 0;
+  const kmTotal   = Math.floor(totalKm);
 
   // Strength: completion-days of habits whose name mentions the exercise
   // (matches "10 pullups", "push ups", "Pull-Ups", ...). Distinct dates so
@@ -585,51 +624,84 @@ function computeTrophies(d) {
   const pullDays = daysMatching(/pull[\s-]?ups?/i);
   const pushDays = daysMatching(/push[\s-]?ups?/i);
 
+  // Each entry carries cur/target so the dashboard panels can show
+  // "next trophy: X (cur/target)" without re-deriving any metric.
+  const T = (id, cat, name, desc, cur, target) =>
+    ({ id, cat, name, desc, cur, target, earned: cur >= target });
+  const backS  = d.backSessions  || 0;
+  const pushS  = d.pushSessions  || 0;
+  const focusS = d.focusSessions || 0;
+
   return [
     // habits
-    { id: 'first-habit', cat: 'habits',  name: 'First step',      desc: 'complete your first habit',   earned: log.length >= 1 },
-    { id: 'habits-10',   cat: 'habits',  name: 'Regular',         desc: '10 habit completions',        earned: log.length >= 10 },
-    { id: 'habits-100',  cat: 'habits',  name: 'Centurion',       desc: '100 habit completions',       earned: log.length >= 100 },
-    { id: 'habits-500',  cat: 'habits',  name: 'Legend',          desc: '500 habit completions',       earned: log.length >= 500 },
-    { id: 'streak-7',    cat: 'habits',  name: 'Week warrior',    desc: 'a 7-day habit streak',        earned: bestStreak >= 7 },
-    { id: 'streak-30',   cat: 'habits',  name: 'Iron month',      desc: 'a 30-day habit streak',       earned: bestStreak >= 30 },
-    { id: 'streak-100',  cat: 'habits',  name: 'Unstoppable',     desc: 'a 100-day habit streak',      earned: bestStreak >= 100 },
-    { id: 'busy-bee',    cat: 'habits',  name: 'Busy bee',        desc: '5 habits done in one day',    earned: maxPerDay >= 5 },
-    // walking
-    { id: 'steps-2k',    cat: 'walking', name: 'Warm-up',         desc: '2,000 steps in a day',        earned: stepVals.some(s => s >= 2000) },
-    { id: 'steps-10k',   cat: 'walking', name: 'Long hauler',     desc: '10,000 steps in one day',     earned: stepVals.some(s => s >= 10000) },
-    { id: 'steps-20k',   cat: 'walking', name: 'Ultra',           desc: '20,000 steps in one day',     earned: stepVals.some(s => s >= 20000) },
-    { id: 'walk-5',      cat: 'walking', name: 'Regular walker',  desc: '5 days at the step goal',     earned: goalWalks >= 5 },
-    { id: 'walk-25',     cat: 'walking', name: 'Trail veteran',   desc: '25 days at the step goal',    earned: goalWalks >= 25 },
-    { id: 'km-100',      cat: 'walking', name: 'Globetrotter',    desc: '100 km walked in total',      earned: totalKm >= 100 },
+    T('first-habit', 'habits', 'First step',      'complete your first habit', log.length, 1),
+    T('habits-10',   'habits', 'Regular',         '10 habit completions',      log.length, 10),
+    T('habits-100',  'habits', 'Centurion',       '100 habit completions',     log.length, 100),
+    T('habits-500',  'habits', 'Legend',          '500 habit completions',     log.length, 500),
+    T('streak-7',    'habits', 'Week warrior',    'a 7-day habit streak',      bestStreak, 7),
+    T('streak-30',   'habits', 'Iron month',      'a 30-day habit streak',     bestStreak, 30),
+    T('streak-100',  'habits', 'Unstoppable',     'a 100-day habit streak',    bestStreak, 100),
+    T('busy-bee',    'habits', 'Busy bee',        '5 habits done in one day',  maxPerDay, 5),
     // strength
-    { id: 'back-1',      cat: 'strength', name: 'First row',      desc: 'first back workout',          earned: (d.backSessions || 0) >= 1 },
-    { id: 'back-10',     cat: 'strength', name: 'Row machine',    desc: '10 back workouts',            earned: (d.backSessions || 0) >= 10 },
-    { id: 'back-30',     cat: 'strength', name: 'Iron back',      desc: '30 back workouts',            earned: (d.backSessions || 0) >= 30 },
-    { id: 'pull-1',      cat: 'strength', name: 'First hang',     desc: 'first pull-up day',           earned: pullDays >= 1 },
-    { id: 'pull-10',     cat: 'strength', name: 'Bar starter',    desc: '10 pull-up days',             earned: pullDays >= 10 },
-    { id: 'pull-30',     cat: 'strength', name: 'Bar veteran',    desc: '30 pull-up days',             earned: pullDays >= 30 },
-    { id: 'push-1',      cat: 'strength', name: 'First rep',      desc: 'first push-up day',           earned: pushDays >= 1 },
-    { id: 'push-10',     cat: 'strength', name: 'Floor regular',  desc: '10 push-up days',             earned: pushDays >= 10 },
-    { id: 'push-30',     cat: 'strength', name: 'Floor general',  desc: '30 push-up days',             earned: pushDays >= 30 },
+    T('back-1',      'strength', 'First row',     'first back workout',        backS, 1),
+    T('back-10',     'strength', 'Row machine',   '10 back workouts',          backS, 10),
+    T('back-30',     'strength', 'Iron back',     '30 back workouts',          backS, 30),
+    T('boop-1',      'strength', 'First boop',    'first push-up session',     pushS, 1),
+    T('boop-10',     'strength', 'Boop machine',  '10 push-up sessions',       pushS, 10),
+    T('boop-30',     'strength', 'Iron chest',    '30 push-up sessions',       pushS, 30),
+    T('pull-1',      'strength', 'First hang',    'first pull-up day',         pullDays, 1),
+    T('pull-10',     'strength', 'Bar starter',   '10 pull-up days',           pullDays, 10),
+    T('pull-30',     'strength', 'Bar veteran',   '30 pull-up days',           pullDays, 30),
+    T('push-1',      'strength', 'First rep',     'first push-up day',         pushDays, 1),
+    T('push-10',     'strength', 'Floor regular', '10 push-up days',           pushDays, 10),
+    T('push-30',     'strength', 'Floor general', '30 push-up days',           pushDays, 30),
+    // walking
+    T('steps-2k',    'walking', 'Warm-up',        '2,000 steps in a day',      maxSteps, 2000),
+    T('steps-10k',   'walking', 'Long hauler',    '10,000 steps in one day',   maxSteps, 10000),
+    T('steps-20k',   'walking', 'Ultra',          '20,000 steps in one day',   maxSteps, 20000),
+    T('walk-5',      'walking', 'Regular walker', '5 days at the step goal',   goalWalks, 5),
+    T('walk-25',     'walking', 'Trail veteran',  '25 days at the step goal',  goalWalks, 25),
+    T('km-100',      'walking', 'Globetrotter',   '100 km walked in total',    kmTotal, 100),
+    // focus
+    T('focus-1',     'focus', 'First block',      'complete a focus block',    focusS, 1),
+    T('focus-10',    'focus', 'Deep worker',      '10 focus blocks',           focusS, 10),
+    T('focus-50',    'focus', 'Flow state',       '50 focus blocks',           focusS, 50),
     // sleep
-    { id: 'sleep-7',     cat: 'sleep',   name: 'Well rested',     desc: '7 nights of good sleep',      earned: goodNights >= 7 },
-    { id: 'dream-week',  cat: 'sleep',   name: 'Dream week',      desc: '7 good nights in a row',      earned: goodRun >= 7 },
-    { id: 'sleep-30',    cat: 'sleep',   name: 'Sleep scientist', desc: '30 nights logged',            earned: sleepVals.length >= 30 },
-    { id: 'bad-night',   cat: 'sleep',   name: 'It happens',      desc: 'honestly log a bad night',    earned: sleepVals.some(q => q === 2) },
+    T('sleep-7',     'sleep', 'Well rested',      '7 nights of good sleep',    goodNights, 7),
+    T('dream-week',  'sleep', 'Dream week',       '7 good nights in a row',    goodRun, 7),
+    T('sleep-30',    'sleep', 'Sleep scientist',  '30 nights logged',          sleepVals.length, 30),
+    T('bad-night',   'sleep', 'It happens',       'honestly log a bad night',  sleepVals.some(q => q === 2) ? 1 : 0, 1),
     // pet
-    { id: 'hatched',     cat: 'pet',     name: 'Hatched',         desc: 'reach the blob stage',        earned: stage >= 1 },
-    { id: 'level-5',     cat: 'pet',     name: 'Level 5',         desc: 'reach level 5',               earned: level >= 5 },
-    { id: 'level-10',    cat: 'pet',     name: 'Level 10',        desc: 'reach level 10',              earned: level >= 10 },
-    { id: 'level-20',    cat: 'pet',     name: 'Overachiever',    desc: 'reach level 20',              earned: level >= 20 },
-    { id: 'evolved',     cat: 'pet',     name: 'Final form',      desc: 'reach the evolved stage',     earned: stage >= 3 },
-    { id: 'quest-1',     cat: 'pet',     name: 'Adventurer',      desc: 'complete your first quest',   earned: questDone },
-    { id: 'days-30',     cat: 'pet',     name: 'Survivor',        desc: '30 days together',            earned: daysAlive >= 30 },
+    T('hatched',     'pet', 'Hatched',            'reach the blob stage',      stage, 1),
+    T('level-5',     'pet', 'Level 5',            'reach level 5',             level, 5),
+    T('level-10',    'pet', 'Level 10',           'reach level 10',            level, 10),
+    T('level-20',    'pet', 'Overachiever',       'reach level 20',            level, 20),
+    T('evolved',     'pet', 'Final form',         'reach the evolved stage',   stage, 3),
+    T('quest-1',     'pet', 'Adventurer',         'complete your first quest', questDone ? 1 : 0, 1),
+    T('days-30',     'pet', 'Survivor',           '30 days together',          daysAlive, 30),
   ];
 }
 
 app.get('/api/trophies', (req, res) => {
   res.json(computeTrophies(store.get()));
+});
+
+// Back-workout history for the dashboard panel.
+app.get('/api/backworkouts', (req, res) => {
+  const d = store.get();
+  res.json({ total: d.backSessions || 0, history: d.backHistory || {} });
+});
+
+// Push-up history for the dashboard panel.
+app.get('/api/pushups', (req, res) => {
+  const d = store.get();
+  res.json({ total: d.pushSessions || 0, history: d.pushHistory || {} });
+});
+
+// Focus-block history for the dashboard panel.
+app.get('/api/focus', (req, res) => {
+  const d = store.get();
+  res.json({ total: d.focusSessions || 0, history: d.focusHistory || {} });
 });
 
 // Sleep history for the dashboard panel.

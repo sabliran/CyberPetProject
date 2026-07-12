@@ -4,6 +4,9 @@ services:
     container_name: cyberpet-dashboard
     ports:
       - "8090:8080"
+      # Port 80 too, so http://pet.local works without a port number
+      # (pet.local is published by the host's pet-local-alias.service).
+      - "80:8080"
     volumes:
       - cyberpet-data:/app/data
       # /dev passthrough so the in-container USB bridge sees the device even

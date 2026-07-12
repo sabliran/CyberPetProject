@@ -126,6 +126,10 @@ body {
   border-radius: var(--radius);
   background: var(--panel);
   padding: 18px;
+  /* Grid/flex children refuse to shrink below content width by default;
+     without this, any wide row inside a panel (e.g. the horizontal trophy
+     strips) blows the whole page layout out sideways. */
+  min-width: 0;
 }
 
 .panel__title {
@@ -488,7 +492,9 @@ body {
 
 /* ---------- History panel ---------- */
 
-.panel--history { grid-column: 1 / -1; }
+/* One grid column wide (same footprint as Walking/Sleep), per user pref —
+   the 12/16-week heatmap ranges scroll horizontally inside the panel. */
+.panel--history { min-width: 0; }
 
 .history-range { display: flex; gap: 4px; }
 
@@ -497,6 +503,10 @@ body {
   display: grid;
   grid-auto-flow: column;
   grid-template-rows: repeat(7, 13px);
+  /* Explicit column width + start-packing: auto tracks stretch to fill a
+     full-width panel, scattering the week columns across the page. */
+  grid-auto-columns: 13px;
+  justify-content: start;
   gap: 3px;
   overflow-x: auto;
   padding-bottom: 6px;
@@ -679,10 +689,20 @@ body {
 
 /* ---- Trophies panel ---------------------------------------------------- */
 
+.panel--trophies {
+  grid-column: 1 / -1;   /* full-width: horizontal category rows need room */
+}
 .trophy-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  /* One horizontal row per category (scrolls sideways when it overflows) —
+     the grid layout stacked 8 habit trophies four rows tall. */
+  display: flex;
   gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+.trophy-grid .trophy {
+  flex: 0 0 150px;
 }
 .trophy {
   padding: 10px 12px;
@@ -723,3 +743,18 @@ body {
   color: var(--xp);
   margin-left: 6px;
 }
+
+/* ---- Back workouts panel (reuses the sleep strip layout) --------------- */
+
+.back-num { color: #FFA050; }
+.back-dot--done { background: #FFA050; }
+
+/* ---- Push-ups panel (same strip layout as back workouts) --------------- */
+
+.push-num { color: #F06090; }
+.push-dot--done { background: #F06090; }
+
+/* ---- Focus panel (same strip layout) ------------------------------------ */
+
+.focus-num { color: #E87030; }
+.focus-dot--done { background: #E87030; }

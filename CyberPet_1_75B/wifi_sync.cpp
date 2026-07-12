@@ -49,7 +49,10 @@ void WifiSync::resolveServerUrl() {
 
   if (!mdnsStarted) {
     // Our own mDNS instance name is irrelevant; begin() is required before queries.
-    mdnsStarted = MDNS.begin("cyberpet");
+    // "cyberpet-device", NOT "cyberpet": the dashboard host publishes
+    // cyberpet.local for the browser-facing panel, and mDNS names must be
+    // unique per network.
+    mdnsStarted = MDNS.begin("cyberpet-device");
     if (!mdnsStarted) { Serial.println("mDNS: init failed"); return; }
   }
   String name = host.substring(0, host.length() - 6);  // strip ".local"
@@ -92,8 +95,10 @@ void WifiSync::buildSyncRequest(Pet* pet, HabitTracker* tracker, String& out) {
   stepsObj["year"]      = stepYear_;
   stepsObj["dayOfYear"] = stepDoy_;
 
-  // Lifetime completed back-workout sessions (server keeps max; trophies).
+  // Lifetime completed workout sessions (server keeps max; trophies/panels).
   reqDoc["backSessions"] = backSessions_;
+  reqDoc["pushSessions"] = pushSessions_;
+  reqDoc["focusSessions"] = focusSessions_;
 
   // Sleep rating rides along once logged; keyed server-side by its own date.
   if (sleepQuality_ >= 0) {

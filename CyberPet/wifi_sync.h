@@ -86,9 +86,11 @@ public:
     sleepQuality_ = quality; sleepYear_ = year; sleepDoy_ = dayOfYear;
   }
 
-  // Back-workout app: lifetime completed sessions (server keeps the max;
-  // used for trophies).
+  // Back-workout / push-up apps: lifetime completed sessions (server keeps
+  // the max; used for trophies and the dashboard panels).
   void setBackSessions(uint32_t n) { backSessions_ = n; }
+  void setPushSessions(uint32_t n) { pushSessions_ = n; }
+  void setFocusSessions(uint32_t n) { focusSessions_ = n; }
 
 private:
   uint32_t  stepsToday_ = 0;
@@ -98,6 +100,8 @@ private:
   int       sleepYear_    = 0;
   int       sleepDoy_     = 0;
   uint32_t  backSessions_ = 0;
+  uint32_t  pushSessions_ = 0;
+  uint32_t  focusSessions_ = 0;
   QuestInfo quests[MAX_QUESTS];
   int       questCount = 0;
   GoalInfo  goals[MAX_GOALS];

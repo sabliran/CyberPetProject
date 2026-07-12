@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "sprites.h"
 #include <cstdlib>
 
 // Stage colors - used for the evolution burst particles. The blob body itself
@@ -51,6 +52,28 @@ static void animSetX(void* obj, int32_t v) { lv_obj_set_x((lv_obj_t*)obj, v); }
 static void animSetY(void* obj, int32_t v) { lv_obj_set_y((lv_obj_t*)obj, v); }
 static void animSetW(void* obj, int32_t v) { lv_obj_set_width((lv_obj_t*)obj, v); }
 static void animSetH(void* obj, int32_t v) { lv_obj_set_height((lv_obj_t*)obj, v); }
+// Image zoom, 256 = 100%. Safe on lv_img (the v8 transform trap is plain
+// objects only). Scales the sprite around its center pivot; child eyes are
+// NOT scaled — acceptable for the subtle puff/squash amounts used here.
+static void animSetZoom(void* obj, int32_t v) { lv_img_set_zoom((lv_obj_t*)obj, (uint16_t)v); }
+
+// Announce the zoom-puff overflow as extra draw area. Without this LVGL only
+// erases the widget box when the blob moves, leaving ghost copies of the
+// overflowing zoomed pixels behind. 24 px covers the max puff overflow
+// (170 px sprite * 12.5% / 2 ≈ 11 px) with margin.
+static void blobExtDrawCB(lv_event_t* e) {
+  lv_event_set_ext_draw_size(e, 24);
+}
+
+// Body sprite per evolution stage (pixel art, body only — eyes on top).
+static const lv_img_dsc_t* stageSprite(int stage) {
+  switch (stage) {
+    case STAGE_EGG:      return &sprite_egg;
+    case STAGE_BLOB:     return &sprite_blob;
+    case STAGE_CREATURE: return &sprite_creature;
+    default:             return &sprite_evolved;
+  }
+}
 static void animSetGlow(void* obj, int32_t v) {
   lv_obj_set_style_shadow_spread((lv_obj_t*)obj, (lv_coord_t)v, 0);
 }
@@ -111,6 +134,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   questCount = 0; goalCount = 0; trophyCount = 0;
   walkSteps = 0; walkSensorOk = false;
   backReps = 0; backRunning = false;
+  pushReps = 0; pushRunning = false; lastPushTapMs = 0;
   sleepLogged = false; sleepQuality = 0;
   lastGestureMs = 0; lastPatMs = 0; syncRequested = false;
   syncOverlay = nullptr; syncLabel = nullptr; syncSpinner = nullptr;
@@ -122,6 +146,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   buildGoalScreen();
   buildAppsScreen();
   buildBackScreen();
+  buildPushScreen();
   buildTrophyScreen();
   buildSleepScreen();
   buildWalkScreen();
@@ -138,13 +163,22 @@ void PetUI::buildPetScreen() {
   lv_obj_set_style_bg_color(petScreen, lv_color_hex(0x000000), 0);
   lv_obj_clear_flag(petScreen, LV_OBJ_FLAG_SCROLLABLE);
 
-  blobShape = lv_obj_create(petScreen);
-  lv_obj_set_size(blobShape, 100, 100);
+  // Pixel-art body sprite (refreshPetScreen sets the per-stage source).
+  // The round radius style is only for the glow shadow's shape; images
+  // need CLICKABLE re-added (lv_img default is non-clickable, which would
+  // silently kill the pat reaction) and OVERFLOW_VISIBLE so zoom puffs can
+  // draw past the widget box.
+  blobShape = lv_img_create(petScreen);
   lv_obj_set_pos(blobShape, 0, 0);  // roaming sets real position via lv_obj_set_pos in refreshPetScreen
   lv_obj_set_style_radius(blobShape, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_border_width(blobShape, 0, 0);
   lv_obj_set_style_pad_all(blobShape, 0, 0);
+  lv_img_set_antialias(blobShape, false);  // keep pixel art crisp under zoom
+  lv_obj_add_flag(blobShape, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_clear_flag(blobShape, LV_OBJ_FLAG_SCROLLABLE);
+  // Zoom overflow handled via ext-draw-size (NOT OVERFLOW_VISIBLE, which
+  // draws outside the box without telling the invalidation logic about it).
+  lv_obj_add_event_cb(blobShape, blobExtDrawCB, LV_EVENT_REFR_EXT_DRAW_SIZE, nullptr);
+  lv_obj_refresh_ext_draw_size(blobShape);
 
   eyeLeft  = lv_obj_create(blobShape);
   eyeRight = lv_obj_create(blobShape);
@@ -494,24 +528,13 @@ void PetUI::blobLoveReaction() {
   // ratchet the blob (and its glow shadow) bigger until the shadow draw
   // buffer exhausts LVGL's memory pool and crashes the device.
   lv_coord_t sz = stageSize(pet->getStage());
-  lv_coord_t puff = sz + sz / 8;
-  lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetW);
-  lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetH);
-  lv_obj_set_size(blobShape, sz, sz);  // snap back to base before re-puffing
+  lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetZoom);
+  lv_img_set_zoom(blobShape, 256);  // snap back to base before re-puffing
   lv_anim_t a;
   lv_anim_init(&a);
   lv_anim_set_var(&a, blobShape);
-  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetW);
-  lv_anim_set_values(&a, sz, puff);
-  lv_anim_set_time(&a, 120);
-  lv_anim_set_playback_time(&a, 260);
-  lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-  lv_anim_start(&a);
-
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, blobShape);
-  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetH);
-  lv_anim_set_values(&a, sz, puff);
+  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetZoom);
+  lv_anim_set_values(&a, 256, 288);  // ~112% puff, same feel as the old +sz/8
   lv_anim_set_time(&a, 120);
   lv_anim_set_playback_time(&a, 260);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
@@ -642,19 +665,12 @@ void PetUI::refreshPetScreen() {
     lv_obj_set_pos(blobShape, blobBaseX, blobBaseY);
   }
 
-  lv_obj_set_size(blobShape, sz, sz);
-  lv_obj_set_style_bg_color(blobShape, lv_color_hex(0xFFFFFF), 0);
+  lv_img_set_src(blobShape, stageSprite(stage));
+  lv_obj_set_size(blobShape, sz, sz);  // sprites are authored at exactly stageSize
 
-  // Glow: solid white ring (spread), tiny soft blur edge (width).
-  // mood=0 → 25% ring width, mood=100 → 100%. Width stays small so the ring is white not grey.
-  int mood = pet->getMood();
-  int glowFactor = 25 + 75 * mood / 100;
-  lv_obj_set_style_shadow_color(blobShape, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_set_style_shadow_opa(blobShape, LV_OPA_COVER, 0);
-  lv_obj_set_style_shadow_spread(blobShape, GLOW_SPREAD[stage] * glowFactor / 100, 0);
-  lv_obj_set_style_shadow_ofs_x(blobShape, 0, 0);
-  lv_obj_set_style_shadow_ofs_y(blobShape, 0, 0);
-  lv_obj_set_style_shadow_width(blobShape, GLOW_BASE_W[stage], 0);
+  // No glow on the pixel-art sprites: the shadow follows the square widget
+  // box (round-rect), which clashes with the sprite silhouette.
+  lv_obj_set_style_shadow_opa(blobShape, LV_OPA_TRANSP, 0);
 
   // Eye layout (relative to current blob size)
   eyeOffX  = sz * 3 / 10;
@@ -732,27 +748,7 @@ void PetUI::startBlobAnimations() {
   lv_anim_del(blobShape, NULL);
   if (roamTimer) { lv_timer_del(roamTimer); roamTimer = nullptr; }
 
-  // Pulsing glow — spread oscillates (solid white ring breathes)
-  {
-    int mood = pet->getMood();
-    int gf     = 25 + 75 * mood / 100;
-    int gBase  = GLOW_SPREAD[stage] * gf / 100;
-    int gPulse = GLOW_PULSE[stage]  * gf / 100;
-    int gLo = LV_MAX(0, gBase - gPulse);
-    int gHi = gBase + gPulse;
-    if (gHi > 0) {
-      lv_anim_t a;
-      lv_anim_init(&a);
-      lv_anim_set_var(&a, blobShape);
-      lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetGlow);
-      lv_anim_set_values(&a, gLo, gHi);
-      lv_anim_set_time(&a, GLOW_PULSE_MS[stage]);
-      lv_anim_set_playback_time(&a, GLOW_PULSE_MS[stage]);
-      lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-      lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-      lv_anim_start(&a);
-    }
-  }
+  // (Glow pulse removed with the sprite conversion — see refreshPetScreen.)
 
   // Kick off roaming — first move is immediate, then on timer
   // Period scales with mood: mood=100 → 1× base, mood=0 → 5× base
@@ -771,8 +767,8 @@ void PetUI::roamToRandom() {
   // Cancel squash/stretch and reset to normal size before starting new roam
   lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetX);
   lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetY);
-  lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetW);
-  lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetH);
+  lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetZoom);
+  lv_img_set_zoom(blobShape, 256);
   lv_obj_set_size(blobShape, sz, sz);
   if (blobBaseX >= 0) lv_obj_set_pos(blobShape, blobBaseX, blobBaseY);
 
@@ -804,34 +800,16 @@ void PetUI::roamToRandom() {
   }
   applyMoodExpression();
 
-  // Directional stretch: blob elongates in the direction of travel
-  int stretchW, stretchH;
-  if (absDx >= absDy) {
-    stretchW = sz * 12 / 10;  // wider for horizontal movement
-    stretchH = sz *  8 / 10;
-  } else {
-    stretchW = sz *  8 / 10;  // taller for vertical movement
-    stretchH = sz * 12 / 10;
-  }
-
+  // In-flight zoom swell (was a directional W/H stretch on the old circle
+  // blob — NEVER resize an lv_img widget: v8 tiles the bitmap to fill a
+  // larger box, drawing a second copy of the sprite).
   int travelMs = ROAM_TRAVEL_MS[stage];
   lv_anim_t a;
 
-  // Stretch W during flight
   lv_anim_init(&a);
   lv_anim_set_var(&a, blobShape);
-  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetW);
-  lv_anim_set_values(&a, sz, stretchW);
-  lv_anim_set_time(&a, travelMs * 3 / 5);
-  lv_anim_set_playback_time(&a, travelMs * 2 / 5);
-  lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-  lv_anim_start(&a);
-
-  // Stretch H during flight
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, blobShape);
-  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetH);
-  lv_anim_set_values(&a, sz, stretchH);
+  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetZoom);
+  lv_anim_set_values(&a, 256, 276);  // ~108% swell while traveling
   lv_anim_set_time(&a, travelMs * 3 / 5);
   lv_anim_set_playback_time(&a, travelMs * 2 / 5);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
@@ -862,9 +840,9 @@ void PetUI::startIdleWobble() {
   int stage = pet->getStage();
   int sz    = stageSize(stage);
 
-  // Ensure size is reset to normal in case stretch anim didn't finish cleanly
-  lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetW);
-  lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetH);
+  // Ensure zoom is reset to normal in case a previous anim didn't finish
+  lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetZoom);
+  lv_img_set_zoom(blobShape, 256);
   lv_obj_set_size(blobShape, sz, sz);
   lv_obj_set_pos(blobShape, blobBaseX, blobBaseY);
 
@@ -872,36 +850,15 @@ void PetUI::startIdleWobble() {
   eyeDriftX = eyeDriftY = 0;
   applyMoodExpression();
 
-  // Squash on landing: blob flattens wide + short, then springs back
-  int sqW    = sz * 5 / 4;          // 125% wide
-  int sqH    = sz * 3 / 4;          // 75% tall
-  int xShift = (sqW - sz) / 2;      // shift left to keep center fixed
-
+  // Landing bounce: quick zoom dip then spring back. (The old W≠H squash
+  // isn't possible on an image — v8 zoom is uniform — so this reads as a
+  // little compression instead; the center pivot keeps it in place.)
   lv_anim_t a;
 
   lv_anim_init(&a);
   lv_anim_set_var(&a, blobShape);
-  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetW);
-  lv_anim_set_values(&a, sz, sqW);
-  lv_anim_set_time(&a, 130);
-  lv_anim_set_playback_time(&a, 210);
-  lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-  lv_anim_start(&a);
-
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, blobShape);
-  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetH);
-  lv_anim_set_values(&a, sz, sqH);
-  lv_anim_set_time(&a, 130);
-  lv_anim_set_playback_time(&a, 210);
-  lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-  lv_anim_start(&a);
-
-  // X compensation: shift left while wider, restore — keeps visual center fixed
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, blobShape);
-  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetX);
-  lv_anim_set_values(&a, blobBaseX, blobBaseX - xShift);
+  lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetZoom);
+  lv_anim_set_values(&a, 256, 216);  // ~85% dip
   lv_anim_set_time(&a, 130);
   lv_anim_set_playback_time(&a, 210);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
@@ -1346,6 +1303,7 @@ struct AppEntry {
 static const AppEntry APP_ENTRIES[] = {
   { LV_SYMBOL_GPS,       "walk",     0x50A8E8 },
   { LV_SYMBOL_REFRESH,   "back",     0xFFA050 },
+  { LV_SYMBOL_DOWN,      "push-ups", 0xF06090 },
   { LV_SYMBOL_EYE_CLOSE, "sleep",    0xA080FF },
   { LV_SYMBOL_OK,        "trophies", 0xFFD060 },
 };
@@ -1363,7 +1321,11 @@ void PetUI::buildAppsScreen() {
   lv_obj_set_style_text_color(title, lv_color_hex(0xA080FF), 0);
 
   // One big rounded button per app, stacked around screen center.
-  const int btnH = 72, gap = 20, pitch = btnH + gap;
+  // 5+ entries need slimmer buttons to stay clear of the title and hint
+  // inside the round glass.
+  const int btnH = APP_COUNT > 4 ? 56 : 72;
+  const int gap  = APP_COUNT > 4 ? 12 : 20;
+  const int pitch = btnH + gap;
   for (int i = 0; i < APP_COUNT; i++) {
     lv_obj_t* btn = lv_btn_create(appsScreen);
     lv_obj_set_size(btn, 280, btnH);
@@ -1413,14 +1375,137 @@ void PetUI::appsBtnCB(lv_event_t* e) {
       self->showBackScreen();
       break;
     case 2:
-      self->showSleepScreen();
+      self->showPushScreen();
       break;
     case 3:
+      self->showSleepScreen();
+      break;
+    case 4:
       self->showTrophyScreen();
       break;
     default:
       break;
   }
+}
+
+/* ---- push-up screen -------------------------------------------------- */
+
+void PetUI::buildPushScreen() {
+  pushScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(pushScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(pushScreen, LV_OBJ_FLAG_SCROLLABLE);
+  // The whole screen is the rep target: a nose is not a precise stylus.
+  lv_obj_add_flag(pushScreen, LV_OBJ_FLAG_CLICKABLE);
+
+  lv_obj_t* title = lv_label_create(pushScreen);
+  lv_label_set_text(title, "PUSH-UPS");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xF06090), 0);
+
+  pushRepLabel = lv_label_create(pushScreen);
+  lv_label_set_text(pushRepLabel, "0");
+  lv_obj_set_style_text_font(pushRepLabel, &lv_font_montserrat_32, 0);
+  lv_obj_set_style_text_color(pushRepLabel, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(pushRepLabel, LV_ALIGN_CENTER, 0, -40);
+
+  pushHintLabel = lv_label_create(pushScreen);
+  lv_label_set_text(pushHintLabel, "put it under you, press START");
+  lv_obj_set_style_text_color(pushHintLabel, lv_color_hex(0x8A3A55), 0);
+  lv_obj_align(pushHintLabel, LV_ALIGN_CENTER, 0, 8);
+
+  lv_obj_t* btn = lv_btn_create(pushScreen);
+  lv_obj_set_size(btn, 240, 56);
+  lv_obj_align(btn, LV_ALIGN_CENTER, 0, 78);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A0A18), 0);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(btn, 16, 0);
+  lv_obj_set_style_border_width(btn, 2, 0);
+  lv_obj_set_style_border_color(btn, lv_color_hex(0xF06090), 0);
+  pushBtnLabel = lv_label_create(btn);
+  lv_label_set_text(pushBtnLabel, LV_SYMBOL_PLAY "  START");
+  lv_obj_set_style_text_color(pushBtnLabel, lv_color_hex(0xF06090), 0);
+  lv_obj_center(pushBtnLabel);
+  lv_obj_add_event_cb(btn, pushBtnCB, LV_EVENT_CLICKED, this);
+
+  lv_obj_t* hint = lv_label_create(pushScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  // Screen-level tap = one rep (the button consumes its own clicks and
+  // doesn't bubble, so START/DONE presses never count as reps).
+  lv_obj_add_event_cb(pushScreen, pushTapCB, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(pushScreen, pushGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::showPushScreen() {
+  pushReps = 0;
+  pushRunning = false;
+  lv_label_set_text(pushRepLabel, "0");
+  lv_label_set_text(pushHintLabel, "put it under you, press START");
+  lv_label_set_text(pushBtnLabel, LV_SYMBOL_PLAY "  START");
+  lv_scr_load_anim(pushScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+void PetUI::pushTapCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (!self->pushRunning) return;
+  // Swipe-release clicks and touch bounce are not push-ups: same gesture
+  // guard as everywhere, plus a 400 ms tap debounce (even fast push-ups
+  // leave more than that between nose touches).
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  if (lv_tick_get() - self->lastPushTapMs < 400) return;
+  self->lastPushTapMs = lv_tick_get();
+
+  self->pushReps++;
+  lv_label_set_text_fmt(self->pushRepLabel, "%d", self->pushReps);
+  if (self->pushReps == PUSH_TARGET_REPS)
+    lv_label_set_text(self->pushHintLabel, "target hit! keep going or DONE");
+}
+
+void PetUI::pushBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+
+  if (!self->pushRunning) {
+    self->pushRunning = true;
+    self->pushReps = 0;
+    self->lastPushTapMs = lv_tick_get();  // arm debounce so this press can't count
+    lv_label_set_text(self->pushRepLabel, "0");
+    lv_label_set_text_fmt(self->pushHintLabel, "boop with your nose! %d = snack", PUSH_TARGET_REPS);
+    lv_label_set_text_fmt(self->pushBtnLabel, LV_SYMBOL_OK "  DONE (need %d)", PUSH_TARGET_REPS);
+    return;
+  }
+
+  self->pushRunning = false;
+  if (self->pushReps >= PUSH_TARGET_REPS) {
+    self->pet->feed(45, 12);
+    self->pet->addXP(PUSH_XP);
+    self->refreshPetScreen();
+    lv_label_set_text_fmt(self->pushHintLabel, "fed the blob  +%d xp", PUSH_XP);
+    if (self->soundCB) self->soundCB(SOUND_HABIT_DONE);
+    if (self->pushDoneCB) self->pushDoneCB();
+    lv_timer_t* t = lv_timer_create(pushDoneTimerCB, 1200, self);
+    lv_timer_set_repeat_count(t, 1);
+  } else {
+    lv_label_set_text(self->pushHintLabel, "put it under you, press START");
+    lv_label_set_text(self->pushBtnLabel, LV_SYMBOL_PLAY "  START");
+  }
+}
+
+void PetUI::pushDoneTimerCB(lv_timer_t* t) {
+  PetUI* self = (PetUI*)t->user_data;
+  if (lv_scr_act() == self->pushScreen) self->showPetScreen();
+}
+
+void PetUI::pushGestureCB(lv_event_t* e) {
+  // Any swipe cancels the session (no award) and returns to the pet.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->pushRunning = false;
+  self->showPetScreen();
 }
 
 /* ---- back-workout screen -------------------------------------------- */
@@ -2392,6 +2477,7 @@ void PetUI::pomClockCB(lv_timer_t* t) {
       if (evolved) self->showEvolutionBurst();
       else if (self->pet->getLevel() > levelBefore)
         self->showLevelUpPill(self->pet->getLevel());
+      if (self->focusDoneCB) self->focusDoneCB();
 
       // Transition to break
       self->pomState = POM_BREAK;
