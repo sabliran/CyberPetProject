@@ -138,11 +138,28 @@
         <div class="walk-stats" id="pushStats"></div>
       </section>
 
+      <section class="panel panel--pullups">
+        <h2 class="panel__title">Pull-Ups</h2>
+        <div class="sleep-today" id="pullupSummary"></div>
+        <div class="sleep-nights" id="pullupDays"></div>
+        <div class="walk-stats" id="pullupStats"></div>
+      </section>
+
       <section class="panel panel--focus">
         <h2 class="panel__title">Focus</h2>
         <div class="sleep-today" id="focusSummary"></div>
         <div class="sleep-nights" id="focusDays"></div>
         <div class="walk-stats" id="focusStats"></div>
+      </section>
+
+      <section class="panel panel--motion">
+        <h2 class="panel__title">Motion Lab</h2>
+        <div class="motion-controls">
+          <select id="motionSelect"></select>
+          <span class="motion-hint">workout sessions are recorded on the device and land here</span>
+        </div>
+        <canvas id="motionCanvas"></canvas>
+        <div class="walk-stats" id="motionStats"></div>
       </section>
 
       <section class="panel panel--trophies">

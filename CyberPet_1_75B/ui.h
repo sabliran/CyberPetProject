@@ -52,6 +52,12 @@ struct GoalInfo {
 #define PUSH_TARGET_REPS 10
 #define PUSH_XP          15
 
+// Pull-up app: reps are counted by the board's IMU with the device in a
+// pocket (sketch calls addPullupRep while isPullupRunning). Lower target and
+// higher XP than the other strength apps — pull-ups are the hard ones.
+#define PULLUP_TARGET_REPS 5
+#define PULLUP_XP          20
+
 struct TrophyInfo {
   char name[TROPHY_NAME_LEN];
 };
@@ -71,6 +77,7 @@ enum PetSoundEvent {
   SOUND_HABIT_DONE = 0,
   SOUND_HABIT_UNDONE,
   SOUND_TROPHY,        // new trophy arrived in a sync — little fanfare
+  SOUND_REP_BLIP,      // quiet blip per counted rep (pull-ups, push-ups)
 };
 typedef void (*PetSoundCB)(int event);
 
@@ -94,6 +101,9 @@ typedef void (*BackDoneCB)(void);
 
 // Push-up app: same contract as BackDoneCB, for the push-up session counter.
 typedef void (*PushDoneCB)(void);
+
+// Pull-up app: same contract as BackDoneCB, for the pull-up session counter.
+typedef void (*PullupDoneCB)(void);
 
 // Focus app: fired when a 25-minute focus block completes (after XP award).
 typedef void (*FocusDoneCB)(void);
@@ -162,6 +172,13 @@ public:
   void addBackRep();
   bool isBackRunning() const { return backRunning; }
   void setBackDoneCallback(BackDoneCB cb) { backDoneCB = cb; }
+
+  // Pull-up app: same IMU-driven contract as the back workout — the sketch's
+  // pull detector calls addPullupRep() while isPullupRunning().
+  void showPullupScreen();
+  void addPullupRep();
+  bool isPullupRunning() const { return pullupRunning; }
+  void setPullupDoneCallback(PullupDoneCB cb) { pullupDoneCB = cb; }
 
   // Push-up app: rep counting is pure touch (nose-taps), so the UI owns it
   // entirely; the sketch only registers the session-done callback.
@@ -256,6 +273,15 @@ private:
   bool       backRunning;
   BackDoneCB backDoneCB = nullptr;  // deliberately NOT reset in init()
 
+  // pull-up screen widgets + state
+  lv_obj_t*    pullupScreen;
+  lv_obj_t*    pullupRepLabel;
+  lv_obj_t*    pullupHintLabel;
+  lv_obj_t*    pullupBtnLabel;
+  int          pullupReps;
+  bool         pullupRunning;
+  PullupDoneCB pullupDoneCB = nullptr;  // deliberately NOT reset in init()
+
   // push-up screen widgets + state
   lv_obj_t*  pushScreen;
   lv_obj_t*  pushRepLabel;
@@ -345,6 +371,7 @@ private:
   void refreshGoalScreen();
   void buildAppsScreen();
   void buildBackScreen();
+  void buildPullupScreen();
   void buildPushScreen();
   void buildTrophyScreen();
   void refreshTrophyScreen();
@@ -394,6 +421,9 @@ private:
   static void backBtnCB(lv_event_t* e);
   static void backGestureCB(lv_event_t* e);
   static void backDoneTimerCB(lv_timer_t* t);
+  static void pullupBtnCB(lv_event_t* e);
+  static void pullupGestureCB(lv_event_t* e);
+  static void pullupDoneTimerCB(lv_timer_t* t);
   static void pushBtnCB(lv_event_t* e);
   static void pushTapCB(lv_event_t* e);
   static void pushGestureCB(lv_event_t* e);

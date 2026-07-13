@@ -96,7 +96,13 @@ public:
   // the max; used for trophies and the dashboard panels).
   void setBackSessions(uint32_t n) { backSessions_ = n; }
   void setPushSessions(uint32_t n) { pushSessions_ = n; }
+  void setPullupSessions(uint32_t n) { pullupSessions_ = n; }
   void setFocusSessions(uint32_t n) { focusSessions_ = n; }
+
+  // Detector-tuning aid: POST a raw |a| capture (uint16 little-endian
+  // milli-g) to the dashboard, which stores it for offline analysis.
+  // WiFi-only — the USB bridge doesn't carry this. Returns true on 2xx.
+  bool postMotionLog(const char* label, const uint16_t* samples, int count, int rateHz);
 
 private:
   uint32_t  stepsToday_ = 0;
@@ -107,6 +113,7 @@ private:
   int       sleepDoy_     = 0;
   uint32_t  backSessions_ = 0;
   uint32_t  pushSessions_ = 0;
+  uint32_t  pullupSessions_ = 0;
   uint32_t  focusSessions_ = 0;
   QuestInfo quests[MAX_QUESTS];
   int       questCount = 0;

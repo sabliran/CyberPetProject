@@ -167,6 +167,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   questCount = 0; goalCount = 0; trophyCount = 0;
   walkSteps = 0; walkSensorOk = false;
   backReps = 0; backRunning = false;
+  pullupReps = 0; pullupRunning = false;
   pushReps = 0; pushRunning = false; lastPushTapMs = 0;
   sleepLogged = false; sleepQuality = 0;
   lastGestureMs = 0; lastPatMs = 0; syncRequested = false;
@@ -179,6 +180,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   buildGoalScreen();
   buildAppsScreen();
   buildBackScreen();
+  buildPullupScreen();
   buildPushScreen();
   buildTrophyScreen();
   buildSleepScreen();
@@ -1431,6 +1433,7 @@ static const AppEntry APP_ENTRIES[] = {
   { LV_SYMBOL_GPS,       "walk",     0x50A8E8 },
   { LV_SYMBOL_REFRESH,   "back",     0xFFA050 },
   { LV_SYMBOL_DOWN,      "push-ups", 0xF06090 },
+  { LV_SYMBOL_UP,        "pull-ups", 0x60D080 },
   { LV_SYMBOL_EYE_CLOSE, "sleep",    0xA080FF },
   { LV_SYMBOL_OK,        "trophies", 0xFFD060 },
 };
@@ -1450,8 +1453,8 @@ void PetUI::buildAppsScreen() {
   // One big rounded button per app, stacked around screen center.
   // 5+ entries need slimmer buttons to stay clear of the title and hint
   // inside the round glass.
-  const int btnH = APP_COUNT > 4 ? 56 : 72;
-  const int gap  = APP_COUNT > 4 ? 12 : 20;
+  const int btnH = APP_COUNT > 5 ? 48 : APP_COUNT > 4 ? 56 : 72;
+  const int gap  = APP_COUNT > 5 ? 8  : APP_COUNT > 4 ? 12 : 20;
   const int pitch = btnH + gap;
   for (int i = 0; i < APP_COUNT; i++) {
     lv_obj_t* btn = lv_btn_create(appsScreen);
@@ -1505,9 +1508,12 @@ void PetUI::appsBtnCB(lv_event_t* e) {
       self->showPushScreen();
       break;
     case 3:
-      self->showSleepScreen();
+      self->showPullupScreen();
       break;
     case 4:
+      self->showSleepScreen();
+      break;
+    case 5:
       self->showTrophyScreen();
       break;
     default:
@@ -1587,6 +1593,7 @@ void PetUI::pushTapCB(lv_event_t* e) {
 
   self->pushReps++;
   lv_label_set_text_fmt(self->pushRepLabel, "%d", self->pushReps);
+  if (self->soundCB) self->soundCB(SOUND_REP_BLIP);  // audible confirm per nose-tap
   if (self->pushReps == PUSH_TARGET_REPS)
     lv_label_set_text(self->pushHintLabel, "target hit! keep going or DONE");
 }
@@ -1694,6 +1701,7 @@ void PetUI::addBackRep() {
   if (!backRunning) return;
   backReps++;
   lv_label_set_text_fmt(backRepLabel, "%d", backReps);
+  if (soundCB) soundCB(SOUND_REP_BLIP);  // audible confirm mid-swing
   if (backReps == BACK_TARGET_REPS)
     lv_label_set_text(backHintLabel, "target hit! keep going or DONE");
 }
@@ -1739,6 +1747,114 @@ void PetUI::backGestureCB(lv_event_t* e) {
   self->lastGestureMs = lv_tick_get();
   lv_indev_wait_release(lv_indev_get_act());
   self->backRunning = false;
+  self->showPetScreen();
+}
+
+/* ---- pull-up screen -------------------------------------------------- */
+
+void PetUI::buildPullupScreen() {
+  pullupScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(pullupScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(pullupScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* title = lv_label_create(pullupScreen);
+  lv_label_set_text(title, "PULL-UPS");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_style_text_color(title, lv_color_hex(0x60D080), 0);
+
+  pullupRepLabel = lv_label_create(pullupScreen);
+  lv_label_set_text(pullupRepLabel, "0");
+  lv_obj_set_style_text_font(pullupRepLabel, &lv_font_montserrat_32, 0);
+  lv_obj_set_style_text_color(pullupRepLabel, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(pullupRepLabel, LV_ALIGN_CENTER, 0, -40);
+
+  pullupHintLabel = lv_label_create(pullupScreen);
+  lv_label_set_text(pullupHintLabel, "pet in pocket, press START");
+  lv_obj_set_style_text_color(pullupHintLabel, lv_color_hex(0x2A6A40), 0);
+  lv_obj_align(pullupHintLabel, LV_ALIGN_CENTER, 0, 8);
+
+  lv_obj_t* btn = lv_btn_create(pullupScreen);
+  lv_obj_set_size(btn, 240, 56);
+  lv_obj_align(btn, LV_ALIGN_CENTER, 0, 78);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0x08201C), 0);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(btn, 16, 0);
+  lv_obj_set_style_border_width(btn, 2, 0);
+  lv_obj_set_style_border_color(btn, lv_color_hex(0x60D080), 0);
+  pullupBtnLabel = lv_label_create(btn);
+  lv_label_set_text(pullupBtnLabel, LV_SYMBOL_PLAY "  START");
+  lv_obj_set_style_text_color(pullupBtnLabel, lv_color_hex(0x60D080), 0);
+  lv_obj_center(pullupBtnLabel);
+  lv_obj_add_event_cb(btn, pullupBtnCB, LV_EVENT_CLICKED, this);
+
+  lv_obj_t* hint = lv_label_create(pullupScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(pullupScreen, pullupGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::showPullupScreen() {
+  pullupReps = 0;
+  pullupRunning = false;
+  lv_label_set_text(pullupRepLabel, "0");
+  lv_label_set_text(pullupHintLabel, "pet in pocket, press START");
+  lv_label_set_text(pullupBtnLabel, LV_SYMBOL_PLAY "  START");
+  lv_scr_load_anim(pullupScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+void PetUI::addPullupRep() {
+  if (!pullupRunning) return;
+  pullupReps++;
+  lv_label_set_text_fmt(pullupRepLabel, "%d", pullupReps);
+  if (soundCB) soundCB(SOUND_REP_BLIP);  // audible confirm — screen's in a pocket
+  if (pullupReps == PULLUP_TARGET_REPS)
+    lv_label_set_text(pullupHintLabel, "target hit! keep going or DONE");
+}
+
+void PetUI::pullupBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+
+  if (!self->pullupRunning) {
+    self->pullupRunning = true;
+    self->pullupReps = 0;
+    lv_label_set_text(self->pullupRepLabel, "0");
+    lv_label_set_text_fmt(self->pullupHintLabel, "hang & pull! %d reps = snack", PULLUP_TARGET_REPS);
+    lv_label_set_text_fmt(self->pullupBtnLabel, LV_SYMBOL_OK "  DONE (need %d)", PULLUP_TARGET_REPS);
+    return;
+  }
+
+  self->pullupRunning = false;
+  if (self->pullupReps >= PULLUP_TARGET_REPS) {
+    self->pet->feed(45, 12);
+    self->pet->addXP(PULLUP_XP);
+    self->refreshPetScreen();
+    lv_label_set_text_fmt(self->pullupHintLabel, "fed the blob  +%d xp", PULLUP_XP);
+    if (self->soundCB) self->soundCB(SOUND_HABIT_DONE);
+    if (self->pullupDoneCB) self->pullupDoneCB();
+    // Let the reward text land, then back to the pet to see the effect.
+    lv_timer_t* t = lv_timer_create(pullupDoneTimerCB, 1200, self);
+    lv_timer_set_repeat_count(t, 1);
+  } else {
+    lv_label_set_text(self->pullupHintLabel, "pet in pocket, press START");
+    lv_label_set_text(self->pullupBtnLabel, LV_SYMBOL_PLAY "  START");
+  }
+}
+
+void PetUI::pullupDoneTimerCB(lv_timer_t* t) {
+  PetUI* self = (PetUI*)t->user_data;
+  if (lv_scr_act() == self->pullupScreen) self->showPetScreen();
+}
+
+void PetUI::pullupGestureCB(lv_event_t* e) {
+  // Any swipe cancels the session (no award) and returns to the pet.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->pullupRunning = false;
   self->showPetScreen();
 }
 

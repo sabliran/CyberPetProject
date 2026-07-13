@@ -78,6 +78,20 @@ bool WifiSync::isConnected() {
   return connected;
 }
 
+bool WifiSync::postMotionLog(const char* label, const uint16_t* samples, int count, int rateHz) {
+  if (!isConnected() || count <= 0) return false;
+  HTTPClient http;
+  // Raw binary straight from the caller's buffer: a JSON body for thousands
+  // of samples would need a ~40 KB String this heap can't afford.
+  http.begin(serverUrl + "/api/motionlog?label=" + label + "&rate=" + String(rateHz));
+  http.addHeader("Content-Type", "application/octet-stream");
+  int httpCode = http.POST((uint8_t*)samples, (size_t)count * sizeof(uint16_t));
+  http.end();
+  Serial.printf("motionlog: %d samples -> HTTP %d\n", count, httpCode);
+  if (httpCode <= 0) resolveServerUrl();  // same stale-.local repair as sync
+  return httpCode >= 200 && httpCode < 300;
+}
+
 // Build the /api/sync request body.
 // completedHabits: array of {id, name} objects.  id is the dashboard's
 // habit.id (Habit::serverId); -1 when the habit has never been synced.
@@ -106,6 +120,7 @@ void WifiSync::buildSyncRequest(Pet* pet, HabitTracker* tracker, String& out) {
   // Lifetime completed workout sessions (server keeps max; trophies/panels).
   reqDoc["backSessions"] = backSessions_;
   reqDoc["pushSessions"] = pushSessions_;
+  reqDoc["pullupSessions"] = pullupSessions_;
   reqDoc["focusSessions"] = focusSessions_;
 
   // Sleep rating rides along once logged; keyed server-side by its own date.

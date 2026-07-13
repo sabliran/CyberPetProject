@@ -754,7 +754,38 @@ body {
 .push-num { color: #F06090; }
 .push-dot--done { background: #F06090; }
 
+/* ---- Pull-ups panel (same strip layout) --------------------------------- */
+
+.pullup-num { color: #60D080; }
+.pullup-dot--done { background: #60D080; }
+
 /* ---- Focus panel (same strip layout) ------------------------------------ */
 
 .focus-num { color: #E87030; }
 .focus-dot--done { background: #E87030; }
+
+/* ---- Motion Lab (workout capture waveforms) ------------------------------ */
+
+.panel--motion { grid-column: 1 / -1; }
+.motion-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.motion-controls select {
+  background: #10101E;
+  color: #C8D0E0;
+  border: 1px solid #2A2A44;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font: inherit;
+}
+.motion-hint { color: #4A4A66; font-size: 12px; }
+#motionCanvas {
+  width: 100%;
+  height: 240px;
+  display: block;
+  background: #0A0A14;
+  border-radius: 10px;
+}

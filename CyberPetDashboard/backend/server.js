@@ -439,7 +439,7 @@ const WALK_STRIDE_CM  = 70;
 const STEP_HISTORY_DAYS = 90;
 
 app.post('/api/sync', (req, res) => {
-  const { deviceId, petState, completedHabits, steps, sleep, backSessions, pushSessions, focusSessions } = req.body;
+  const { deviceId, petState, completedHabits, steps, sleep, backSessions, pushSessions, pullupSessions, focusSessions } = req.body;
   // Use the server's local date as the canonical completion date.
   // Device and server clocks may disagree slightly around midnight — the server
   // date is always preferred so history records are consistent.
@@ -525,6 +525,19 @@ app.post('/api/sync', (req, res) => {
       d.pushHistory[key] = (d.pushHistory[key] || 0) + delta;
       const cutoff = new Date(Date.now() - STEP_HISTORY_DAYS * 864e5).toISOString().slice(0, 10);
       for (const k of Object.keys(d.pushHistory)) if (k < cutoff) delete d.pushHistory[k];
+    }
+    // Pull-up sessions: identical bookkeeping.
+    if (typeof pullupSessions === 'number' && pullupSessions > (d.pullupSessions || 0)) {
+      const delta = pullupSessions - (d.pullupSessions || 0);
+      d.pullupSessions = pullupSessions;
+      let key = todayDate;
+      if (steps && steps.year >= 2020 && steps.dayOfYear >= 1 && steps.dayOfYear <= 366) {
+        key = new Date(Date.UTC(steps.year, 0, steps.dayOfYear)).toISOString().slice(0, 10);
+      }
+      d.pullupHistory = d.pullupHistory || {};
+      d.pullupHistory[key] = (d.pullupHistory[key] || 0) + delta;
+      const cutoff = new Date(Date.now() - STEP_HISTORY_DAYS * 864e5).toISOString().slice(0, 10);
+      for (const k of Object.keys(d.pullupHistory)) if (k < cutoff) delete d.pullupHistory[k];
     }
     // Focus blocks (25-min pomodoros): identical bookkeeping.
     if (typeof focusSessions === 'number' && focusSessions > (d.focusSessions || 0)) {
@@ -621,7 +634,14 @@ function computeTrophies(d) {
   const daysMatching = (re) => new Set(
     log.filter(e => re.test(e.habitName || '')).map(e => e.date)
   ).size;
-  const pullDays = daysMatching(/pull[\s-]?ups?/i);
+  // Pull-up days: union of habit-log matches and the pull-up app's tracked
+  // sessions (per-date history), so days earned either way both count and
+  // pre-app trophies survive.
+  const pullDaySet = new Set(
+    log.filter(e => /pull[\s-]?ups?/i.test(e.habitName || '')).map(e => e.date)
+  );
+  for (const k of Object.keys(d.pullupHistory || {})) pullDaySet.add(k);
+  const pullDays = pullDaySet.size;
   const pushDays = daysMatching(/push[\s-]?ups?/i);
 
   // Each entry carries cur/target so the dashboard panels can show
@@ -696,6 +716,61 @@ app.get('/api/backworkouts', (req, res) => {
 app.get('/api/pushups', (req, res) => {
   const d = store.get();
   res.json({ total: d.pushSessions || 0, history: d.pushHistory || {} });
+});
+
+// Pull-up history for the dashboard panel.
+app.get('/api/pullups', (req, res) => {
+  const d = store.get();
+  res.json({ total: d.pullupSessions || 0, history: d.pullupHistory || {} });
+});
+
+// Motion captures (detector tuning): raw uint16 little-endian milli-g
+// samples from the device, one file per capture. Deliberately outside
+// store.js — these are throwaway debug recordings, not app state.
+const MOTION_DIR = path.join(__dirname, 'data', 'motionlogs');
+
+app.post('/api/motionlog', express.raw({ type: 'application/octet-stream', limit: '1mb' }), (req, res) => {
+  const label = String(req.query.label || 'capture').replace(/[^a-zA-Z0-9_-]/g, '');
+  const rate = parseInt(req.query.rate, 10) || 0;
+  const buf = req.body;
+  if (!Buffer.isBuffer(buf) || buf.length < 4) return res.status(400).json({ error: 'empty capture' });
+  const samples = [];
+  for (let i = 0; i + 1 < buf.length; i += 2) samples.push(buf.readUInt16LE(i));
+  fs.mkdirSync(MOTION_DIR, { recursive: true });
+  const file = `${new Date().toISOString().replace(/[:.]/g, '-')}_${label}.json`;
+  fs.writeFileSync(path.join(MOTION_DIR, file),
+    JSON.stringify({ label, rate, at: new Date().toISOString(), samples }));
+  console.log(`motionlog: ${label}, ${samples.length} samples @ ${rate} Hz -> ${file}`);
+  res.json({ ok: true, samples: samples.length, file });
+});
+
+app.get('/api/motionlog/latest', (req, res) => {
+  let files = [];
+  try { files = fs.readdirSync(MOTION_DIR).filter(f => f.endsWith('.json')).sort(); } catch (_) {}
+  if (!files.length) return res.status(404).json({ error: 'no captures yet' });
+  res.type('json').send(fs.readFileSync(path.join(MOTION_DIR, files[files.length - 1])));
+});
+
+// Capture index for the Motion Lab panel (newest first, metadata only).
+app.get('/api/motionlog/list', (req, res) => {
+  let files = [];
+  try { files = fs.readdirSync(MOTION_DIR).filter(f => f.endsWith('.json')).sort().reverse(); } catch (_) {}
+  const list = [];
+  for (const f of files.slice(0, 30)) {
+    try {
+      const d = JSON.parse(fs.readFileSync(path.join(MOTION_DIR, f)));
+      list.push({ file: f, label: d.label, at: d.at, rate: d.rate, count: (d.samples || []).length });
+    } catch (_) {}
+  }
+  res.json(list);
+});
+
+// One capture by file name (as returned by /list; name is sanitized).
+app.get('/api/motionlog/file/:name', (req, res) => {
+  const name = String(req.params.name).replace(/[^a-zA-Z0-9_.:-]/g, '');
+  const p = path.join(MOTION_DIR, name);
+  if (!name.endsWith('.json') || !fs.existsSync(p)) return res.status(404).json({ error: 'not found' });
+  res.type('json').send(fs.readFileSync(p));
 });
 
 // Focus-block history for the dashboard panel.

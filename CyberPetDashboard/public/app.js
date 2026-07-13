@@ -766,6 +766,195 @@ async function loadPushUps() {
               : `<span>all push-up trophies earned</span>`);
 }
 
+// ---- Pull-ups ------------------------------------------------------------------
+
+async function loadPullUps() {
+  const { total, history } = await api('/pullups');
+  const now = new Date();
+  const todayKey = walkDateKey(now);
+
+  const summary = document.getElementById('pullupSummary');
+  const todayCount = history[todayKey] || 0;
+  const dates = Object.keys(history).sort();
+  summary.innerHTML = `<b class="pullup-num">${total}</b> session${total === 1 ? '' : 's'} total` +
+    (todayCount ? `  ·  <b class="pullup-num">${todayCount}</b> today` : '') +
+    (!todayCount && dates.length ? `  ·  last: ${dates[dates.length - 1]}` : '');
+
+  const days = document.getElementById('pullupDays');
+  days.innerHTML = '';
+  for (let i = 13; i >= 0; i--) {
+    const key = walkDateKey(new Date(now.getTime() - i * 864e5));
+    const n = history[key] || 0;
+    const dot = document.createElement('div');
+    dot.className = `sleep-dot${n > 0 ? ' pullup-dot--done' : ''}`;
+    dot.title = `${key}: ${n} session${n === 1 ? '' : 's'}`;
+    days.appendChild(dot);
+  }
+
+  const cutoff30 = walkDateKey(new Date(now.getTime() - 29 * 864e5));
+  let last30 = 0;
+  for (const [key, n] of Object.entries(history)) if (key >= cutoff30) last30 += n;
+  const trophies = await getTrophies();
+  const pullNext = trophies.filter(t => t.id.startsWith('pull-') && !t.earned)
+                           .sort((a, b) => a.target - b.target)[0];
+  document.getElementById('pullupStats').innerHTML = `
+    <span><b>${last30}</b> last 30 days</span>` +
+    (pullNext ? `<span>next trophy: <b>${escapeHtml(pullNext.name)}</b> (${pullNext.cur}/${pullNext.target})</span>`
+              : `<span>all pull-up trophies earned</span>`);
+}
+
+// ---- Motion Lab ----------------------------------------------------------------
+// Plots device-recorded workout captures (|a| in g at ~66 Hz) and replays the
+// firmware's rep detectors over them, so a bad count can be diagnosed from the
+// couch. Detector constants mirror the .ino — keep them in sync when retuning.
+
+const MOTION_PULL = { trigger: 1.16, rearm: 1.08, dip: 0.88, ceiling: 1.38,
+                      windowMs: 1200, stillMs: 1200, stillBand: 0.12, minGapMs: 2000 };
+const MOTION_BACK = { trigger: 1.35, rearm: 1.10, calmMs: 350 };
+
+function motionDetectPull(g, rate) {
+  const c = MOTION_PULL, reps = [];
+  let armedSession = false, stillSince = null, armedAt = null;
+  let armed = true, pending = null, burstMax = 0, lastRep = -1e9;
+  for (let i = 0; i < g.length; i++) {
+    const t = i / rate * 1000, m = g[i];
+    if (!armedSession) {
+      if (Math.abs(m - 1) < c.stillBand) {
+        if (stillSince === null) stillSince = t;
+        if (t - stillSince >= c.stillMs) { armedSession = true; armedAt = t; }
+      } else stillSince = null;
+      continue;
+    }
+    if (m < c.rearm) armed = true;
+    if (armed && m > c.trigger && pending === null) { armed = false; pending = t; burstMax = m; }
+    if (pending !== null) {
+      if (m > burstMax) burstMax = m;
+      if (m < c.dip) {
+        if (burstMax <= c.ceiling && t - lastRep >= c.minGapMs) { reps.push({ t: pending, peak: burstMax }); lastRep = t; }
+        pending = null;
+      } else if (t - pending > c.windowMs) pending = null;
+    }
+  }
+  return { reps, armedAt };
+}
+
+function motionDetectBack(g, rate) {
+  const c = MOTION_BACK, reps = [];
+  let quietSince = null, armedByCalm = false;
+  for (let i = 0; i < g.length; i++) {
+    const t = i / rate * 1000, m = g[i];
+    if (m < c.rearm) {
+      if (quietSince === null) quietSince = t;
+      if (t - quietSince >= c.calmMs) armedByCalm = true;
+    } else {
+      quietSince = null;
+      if (armedByCalm && m > c.trigger) { armedByCalm = false; reps.push({ t, peak: m }); }
+    }
+  }
+  return { reps, armedAt: null };
+}
+
+function drawMotion(cap) {
+  const canvas = document.getElementById('motionCanvas');
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth, H = canvas.clientHeight || 240;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+
+  const g = cap.samples.map(v => v / 1000);
+  const rate = cap.rate || 66;
+  const isBack = cap.label === 'back';
+  const det = isBack ? motionDetectBack(g, rate) : motionDetectPull(g, rate);
+  const cfg = isBack ? MOTION_BACK : MOTION_PULL;
+
+  const lo = Math.min(0.6, Math.min(...g) - 0.05);
+  const hi = Math.max(1.5, Math.max(...g) + 0.05);
+  const X = t => (t / (g.length / rate * 1000)) * W;
+  const Y = v => H - ((v - lo) / (hi - lo)) * H;
+
+  // threshold guides
+  const guide = (v, color, label) => {
+    ctx.strokeStyle = color; ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, Y(v)); ctx.lineTo(W, Y(v)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = color; ctx.font = '10px monospace';
+    ctx.fillText(`${label} ${v.toFixed(2)}g`, 6, Y(v) - 3);
+  };
+  guide(1.0, '#2A2A44', '');
+  guide(cfg.trigger, '#60D080', 'trigger');
+  if (!isBack) {
+    guide(cfg.dip, '#A080FF', 'dip');
+    guide(cfg.ceiling, '#E05060', 'ceiling');
+  }
+
+  // stillness-gate marker
+  if (det.armedAt !== null) {
+    ctx.strokeStyle = '#3A6A8A'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(X(det.armedAt), 0); ctx.lineTo(X(det.armedAt), H); ctx.stroke();
+    ctx.fillStyle = '#3A6A8A'; ctx.fillText('armed', X(det.armedAt) + 3, 12);
+  }
+
+  // waveform
+  ctx.strokeStyle = '#50A8E8'; ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  for (let i = 0; i < g.length; i++) {
+    const x = X(i / rate * 1000), y = Y(g[i]);
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  }
+  ctx.stroke();
+
+  // detected reps
+  ctx.fillStyle = '#FFD060';
+  for (const r of det.reps) {
+    const x = X(r.t);
+    ctx.beginPath();
+    ctx.moveTo(x, 6); ctx.lineTo(x - 5, 0); ctx.lineTo(x + 5, 0);
+    ctx.closePath(); ctx.fill();
+    ctx.fillRect(x - 0.5, 6, 1, H - 6);
+  }
+
+  const dur = g.length / rate;
+  document.getElementById('motionStats').innerHTML = `
+    <span><b>${escapeHtml(cap.label)}</b> · ${new Date(cap.at).toLocaleString()}</span>
+    <span><b>${dur.toFixed(1)}</b> s · ${g.length} samples @ ${rate} Hz</span>
+    <span>peak <b>${Math.max(...g).toFixed(2)}g</b> · min <b>${Math.min(...g).toFixed(2)}g</b></span>
+    <span><b class="pullup-num">${det.reps.length}</b> reps detected</span>`;
+}
+
+let motionFiles = [];
+
+async function renderMotionFile(file) {
+  const cap = await api('/motionlog/file/' + encodeURIComponent(file));
+  drawMotion(cap);
+}
+
+async function loadMotionLab() {
+  let list = [];
+  try { list = await api('/motionlog/list'); } catch (_) {}
+  const sel = document.getElementById('motionSelect');
+  const panel = document.querySelector('.panel--motion');
+  if (!list.length) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  const prev = sel.value;
+  const prevNewest = motionFiles[0];
+  motionFiles = list.map(c => c.file);
+  sel.innerHTML = '';
+  for (const c of list) {
+    const opt = document.createElement('option');
+    opt.value = c.file;
+    opt.textContent = `${c.label} · ${new Date(c.at).toLocaleString()} · ${(c.count / (c.rate || 66)).toFixed(0)}s`;
+    sel.appendChild(opt);
+  }
+  // follow the newest capture unless the user is inspecting an older one
+  const follow = !prev || prev === prevNewest || !motionFiles.includes(prev);
+  sel.value = follow ? motionFiles[0] : prev;
+  if (follow || prev !== sel.value) await renderMotionFile(sel.value);
+}
+
+document.getElementById('motionSelect').addEventListener('change', e => renderMotionFile(e.target.value));
+
 // ---- Focus blocks --------------------------------------------------------------
 
 async function loadFocus() {
@@ -877,7 +1066,7 @@ function flashPushed() {
 // ---- Boot -----------------------------------------------------------------
 
 async function refreshAll() {
-  await Promise.all([loadPet(), loadHabits(), loadGoals(), loadQuests(), loadSettings(), loadHistory(), loadWalking(), loadSleep(), loadBackWorkouts(), loadPushUps(), loadFocus(), loadTrophies()]);
+  await Promise.all([loadPet(), loadHabits(), loadGoals(), loadQuests(), loadSettings(), loadHistory(), loadWalking(), loadSleep(), loadBackWorkouts(), loadPushUps(), loadPullUps(), loadFocus(), loadTrophies(), loadMotionLab()]);
 }
 
 refreshAll();
@@ -888,4 +1077,6 @@ setInterval(loadWalking, 15000);
 setInterval(loadSleep, 15000);
 setInterval(loadBackWorkouts, 15000);
 setInterval(loadPushUps, 15000);
+setInterval(loadPullUps, 15000);
 setInterval(loadFocus, 15000);
+setInterval(loadMotionLab, 15000);

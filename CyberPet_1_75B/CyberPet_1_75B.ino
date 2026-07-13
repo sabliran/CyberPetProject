@@ -24,6 +24,7 @@
 #include "XPowersLib.h"
 #include <esp_timer.h>
 #include <esp_sleep.h>
+#include <driver/rtc_io.h>   // RTC-domain pull config for the tap-to-wake pin
 #include <ArduinoOTA.h>
 #include "ESP_I2S.h"
 #include "esp_check.h"
@@ -87,6 +88,14 @@ static uint32_t swLastStepMs = 0;
 static uint32_t swLastSample = 0;
 
 extern PetUI ui;  // defined below with the other globals; the swing detector needs it
+
+// Motion capture (pull-up detector tuning): while a pull-up session runs,
+// every |a| sample is recorded as milli-g into PSRAM; when the session ends
+// the loop ships it to the dashboard (POST /api/motionlog) for offline
+// analysis. Costs nothing when no session is running.
+static const int  CAP_MAX = 16384;      // ~4 min at the sampler's ~66 Hz
+static uint16_t*  capBuf  = nullptr;    // ps_malloc'd on first session
+static int        capLen  = 0;
 
 static void swStepSample() {
   uint32_t nowMs = millis();
@@ -175,6 +184,83 @@ static void swStepSample() {
   } else {
     quietSince = 0;
     armedByCalm = false;
+  }
+
+  // Pull-up rep detector (device in a pocket): a rep is the concentric pull —
+  // an upward burst (|a| > trigger) that must be followed by the top-of-bar
+  // deceleration dip (|a| < dip) within the window. Burst + dip are one
+  // continuous motion, so this fires exactly once per pull. The back
+  // workout's plain calm gate can't work here: controlled lowering sits near
+  // 1 g (reads as calm), so the bottom "catch" bump would double-count — but
+  // the catch has no dip after it (the dead hang is a steady 1 g), so its
+  // pending burst just expires.
+  // v3, tuned on a captured real set (July 2026, 5 strict reps in a pocket;
+  // /api/motionlog): pull peaks were 1.20-1.31 g (v1's 1.25 trigger missed
+  // 3 of 5), post-pull dips 0.69-0.82 g, reps ~3 s apart — while pocket
+  // handling spiked 1.42-1.45 g, i.e. HARDER than real pulls. Hence the
+  // peak ceiling: a burst that tops 1.38 g is handling, not a pull-up. The
+  // 2 s min gap absorbs sub-ceiling handling chatter. Replayed against the
+  // capture this scores 5/5 with zero phantoms (start handling stopped by
+  // the stillness gate, bar dismount by dip-before-spike ordering).
+  static const float    PULL_TRIGGER_G      = 1.16f;
+  static const float    PULL_REARM_G        = 1.08f;
+  static const float    PULL_DIP_G          = 0.88f;
+  static const float    PULL_CEILING_G      = 1.38f;
+  static const uint32_t PULL_DIP_WINDOW_MS  = 1200;
+  static const uint32_t PULL_STILL_MS       = 1200;
+  static const uint32_t PULL_MIN_GAP_MS     = 2000;
+  static bool     pullSessionArmed = false;  // stillness gate, once per session
+  static uint32_t pullStillSince   = 0;
+  static bool     pullArmed   = true;
+  static uint32_t pullPending = 0;   // burst time; 0 = no burst waiting for its dip
+  static float    pullBurstMax = 0;  // peak |a| inside the pending burst
+  static uint32_t pullLastRepMs = 0;
+  // Record whole workout sessions (pull-up AND back), handling included —
+  // that's tuning gold, and the dashboard's Motion Lab plots it.
+  if ((ui.isPullupRunning() || ui.isBackRunning()) && capBuf && capLen < CAP_MAX) {
+    float mg = mag * 1000.0f;
+    capBuf[capLen++] = (uint16_t)(mg < 0 ? 0 : (mg > 65535.0f ? 65535 : mg));
+  }
+
+  if (ui.isPullupRunning()) {
+    if (!pullSessionArmed) {
+      // Pocketing the device / walking to the bar is continuous jiggle;
+      // counting arms only after 1.2 s of holding still (standing or dead
+      // hang), so handling can't score reps.
+      if (fabsf(mag - 1.0f) < 0.12f) {
+        if (pullStillSince == 0) pullStillSince = nowMs;
+        if (nowMs - pullStillSince >= PULL_STILL_MS) pullSessionArmed = true;
+      } else {
+        pullStillSince = 0;
+      }
+    } else {
+      if (mag < PULL_REARM_G) pullArmed = true;
+      if (pullArmed && mag > PULL_TRIGGER_G && pullPending == 0) {
+        pullArmed = false;           // one pending per burst, however long it lasts
+        pullPending = nowMs;
+        pullBurstMax = mag;
+      }
+      if (pullPending != 0) {
+        if (mag > pullBurstMax) pullBurstMax = mag;
+        if (mag < PULL_DIP_G) {
+          if (pullBurstMax <= PULL_CEILING_G &&
+              nowMs - pullLastRepMs >= PULL_MIN_GAP_MS) {
+            pullLastRepMs = nowMs;
+            ui.addPullupRep();
+          }
+          pullPending = 0;
+        } else if (nowMs - pullPending > PULL_DIP_WINDOW_MS) {
+          pullPending = 0;           // burst without a dip: catch bump or noise
+        }
+      }
+    }
+  } else {
+    pullSessionArmed = false;
+    pullStillSince = 0;
+    pullArmed = true;
+    pullPending = 0;
+    pullBurstMax = 0;
+    pullLastRepMs = 0;
   }
 }
 
@@ -314,6 +400,9 @@ static void petSoundCB(int event) {
       playTone(880.0f, 80, 0.5f);
       playTone(1318.5f, 150, 0.5f);
       break;
+    case SOUND_REP_BLIP:      // quiet C6 blip, 10% volume (rep counted)
+      playTone(1046.5f, 60, 0.1f);
+      break;
   }
 }
 
@@ -346,6 +435,15 @@ static void pushDoneCB() {
   pushSessions++;
   storage.savePushSessions(pushSessions);
   wifiSync.setPushSessions(pushSessions);
+}
+
+// Pull-up app: same pattern.
+static uint32_t pullupSessions = 0;
+
+static void pullupDoneCB() {
+  pullupSessions++;
+  storage.savePullupSessions(pullupSessions);
+  wifiSync.setPullupSessions(pullupSessions);
 }
 
 // OTA firmware updates over WiFi (requires the app3M_fat9M_16MB dual-slot
@@ -476,6 +574,8 @@ static const uint32_t AUTOSLEEP_MS     = 2UL * 60UL * 1000UL;
 static const uint32_t AUTOSLEEP_DIM_MS = 90UL * 1000UL;        // warning dim
 static const uint8_t  WOM_THRESHOLD_MG = 120;  // pick-up strength, not desk bumps
 
+static bool wokeFromSleep = false;  // set at boot, picks the splash wording
+
 // Swap the IMU from pedometer duty to a wake-on-motion source. Direct
 // registers, not qmi.configWakeOnMotion(): SensorLib resets the chip first,
 // which restores the CTRL9-handshake-on-INT1-pin default, so its writeCommand
@@ -510,7 +610,15 @@ static void enterAutoSleep() {
   gfx->displayOff();                            // CO5300 sleep-in
   if (imuOk && imuWakeOnMotionInit(WOM_THRESHOLD_MG))
     esp_sleep_enable_ext1_wakeup(1ULL << 21, ESP_EXT1_WAKEUP_ANY_HIGH);  // pickup
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);  // BOOT press always works
+  // Tap-to-wake: the CST92xx stays powered through deep sleep (its rail is
+  // never cut) and pulses TP_INT low on a touch, so this costs nothing extra.
+  // Deliberately NOT the BOOT button: GPIO0 is a strapping pin, and a
+  // human-length press still held when the wake reset samples it drops the
+  // ROM into download mode — black screen, dead until a power cycle. That
+  // trap is why BOOT-to-wake felt broken.
+  rtc_gpio_pullup_en((gpio_num_t)TP_INT);
+  rtc_gpio_pulldown_dis((gpio_num_t)TP_INT);
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)TP_INT, 0);
   esp_deep_sleep_start();                       // never returns; wake = fresh boot
 }
 
@@ -535,9 +643,10 @@ void setup() {
         rr == ESP_RST_WDT      ? "other watchdog" :
         rr == ESP_RST_BROWNOUT ? "brownout"       : "other");
     if (rr == ESP_RST_DEEPSLEEP) {
+      wokeFromSleep = true;
       esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
       Serial.printf("boot: autosleep wake by %s\n",
-          wc == ESP_SLEEP_WAKEUP_EXT0 ? "BOOT button" :
+          wc == ESP_SLEEP_WAKEUP_EXT0 ? "screen tap" :
           wc == ESP_SLEEP_WAKEUP_EXT1 ? "pickup (IMU)" : "other");
     }
   }
@@ -656,6 +765,22 @@ void setup() {
   gfx->begin();
   gfx->setBrightness(200);
 
+  // Boot splash, raw GFX before LVGL exists: WiFi connect can hold setup()
+  // for 15+ seconds and an all-black panel reads as "still off", which
+  // invites more pressing. No text — this framebuffer is native orientation
+  // while the UI runs 180°-rotated in LVGL, so glyphs would render upside
+  // down; a blob face + loading dots read fine either way. Coordinates below
+  // are user-space mirrored through (466-x, 466-y).
+  {
+    uint16_t blue = gfx->color565(66, 120, 235);   // sprite shade blue
+    gfx->fillScreen(0x0000);
+    gfx->fillCircle(233, 256, 46, blue);           // body, user (233,210)
+    gfx->fillRect(244, 257, 8, 14, 0x0000);        // eyes, user y 195
+    gfx->fillRect(214, 257, 8, 14, 0x0000);
+    for (int i = 0; i < 3; i++)                    // "loading" dots, user y 300
+      gfx->fillCircle(203 + 30 * i, 166, 6, blue);
+  }
+
   lv_init();
 
   // 40 lines per buffer, NOT the example's full-height/4 monsters: two of
@@ -717,6 +842,9 @@ void setup() {
   ui.setPushDoneCallback(pushDoneCB);
   pushSessions = storage.loadPushSessions();
   wifiSync.setPushSessions(pushSessions);
+  ui.setPullupDoneCallback(pullupDoneCB);
+  pullupSessions = storage.loadPullupSessions();
+  wifiSync.setPullupSessions(pullupSessions);
   ui.setFocusDoneCallback(focusDoneCB);
   focusSessions = storage.loadFocusSessions();
   wifiSync.setFocusSessions(focusSessions);
@@ -772,6 +900,19 @@ void setup() {
   lastXpResetToken = storage.loadXpResetToken();
   lastDailyCheck  = millis();
   lastSyncAttempt = millis();
+
+  // First power-on/wake of the morning: open the sleep app so "how did I
+  // sleep" gets answered while the answer is fresh. Only until it's logged
+  // (the once-per-day gate) and only in the morning window — an afternoon
+  // first boot isn't nagged. Every later boot lands on the pet as usual.
+  if (timeKeeper.hasSync()) {
+    WallDate t = timeKeeper.now();
+    bool loggedToday = (t.year == sleepState.year && t.dayOfYear == sleepState.dayOfYear);
+    if (!loggedToday && t.hour >= 4 && t.hour < 12) {
+      Serial.println("morning boot - opening sleep app");
+      ui.showSleepScreen();
+    }
+  }
 }
 
 // After every successful sync: push results to the UI and cache the
@@ -1045,6 +1186,42 @@ void loop() {
     }
   }
 
+  // ── Workout motion capture lifecycle (pull-ups + back) ────────────────────
+  // Arm the PSRAM recorder when a session starts; when it ends, ship the
+  // capture to the dashboard's Motion Lab. WiFi may still be self-healing
+  // right after a workout, so retry every 20 s and give up after 15 min (a
+  // pending capture also inhibits auto-sleep below, briefly).
+  static bool     capPending      = false;
+  static uint32_t capPendingSince = 0;
+  {
+    static bool        wasCapRunning = false;
+    static uint32_t    capLastTry    = 0;
+    static const char* capLabel      = "pullup";
+    bool running = ui.isPullupRunning() || ui.isBackRunning();
+    if (running && !wasCapRunning) {
+      if (!capBuf) capBuf = (uint16_t*)ps_malloc(CAP_MAX * sizeof(uint16_t));
+      capLen = 0;
+      capPending = false;
+      capLabel = ui.isBackRunning() ? "back" : "pullup";
+    } else if (!running && wasCapRunning && capLen > 0) {
+      capPending = true;
+      capPendingSince = millis();
+      capLastTry = 0;
+      Serial.printf("motionlog: captured %d samples (%s), uploading when WiFi allows\n",
+                    capLen, capLabel);
+    }
+    wasCapRunning = running;
+
+    if (capPending && millis() - capPendingSince > 15UL * 60UL * 1000UL) {
+      capPending = false;  // WiFi never came back; don't hold sleep hostage
+      Serial.println("motionlog: gave up waiting for WiFi, capture dropped");
+    }
+    if (capPending && wifiSync.isConnected() && millis() - capLastTry > 20000UL) {
+      capLastTry = millis();
+      if (wifiSync.postMotionLog(capLabel, capBuf, capLen, 66)) capPending = false;
+    }
+  }
+
   // ── Auto-sleep: a left-on device dims, then deep-sleeps ──────────────────
   // Inhibited while USB-powered (docked = bridge sync), in pocket mode (step
   // counting), during focus/back sessions, or while steps keep arriving
@@ -1056,6 +1233,7 @@ void loop() {
       lastIdleCheck = millis();
       uint32_t idle = lv_disp_get_inactive_time(NULL);
       bool inhibited = pocketMode || ui.isFocusRunning() || ui.isBackRunning() ||
+                       ui.isPullupRunning() || capPending ||
                        (pmuOk && power.isVbusIn()) ||
                        (swLastStepMs != 0 && millis() - swLastStepMs < AUTOSLEEP_MS);
       if (inhibited || idle < AUTOSLEEP_DIM_MS) {
