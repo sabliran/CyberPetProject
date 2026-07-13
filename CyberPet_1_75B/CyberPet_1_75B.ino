@@ -462,6 +462,58 @@ static void touchReadCB(lv_indev_drv_t* indev, lv_indev_data_t* data) {
   }
 }
 
+// ── Auto-sleep ────────────────────────────────────────────────────────────────
+// Forgotten-on is the #1 battery killer: an idle pet screen still burns
+// ~100 mA (AMOLED + WiFi + CPU). After AUTOSLEEP_MS without touch input the
+// device saves everything and deep-sleeps (µA-level draw; wake is a fresh
+// boot, all state lives in NVS). Wake sources: BOOT press (ext0, GPIO0) and
+// pick-up motion — the QMI8658's INT2 is the only IMU interrupt routed to the
+// ESP32 (GPIO21 per the 1.75 schematic; INT1 and the RTC INT only reach the
+// TCA9554 expander, which can't wake the chip). Wake-on-motion runs the accel
+// alone at a low-power ODR (tens of µA) — cheaper than keeping the touch
+// controller scanning for tap-to-wake, which is why pickup is the gesture.
+static const uint32_t AUTOSLEEP_MS     = 2UL * 60UL * 1000UL;
+static const uint32_t AUTOSLEEP_DIM_MS = 90UL * 1000UL;        // warning dim
+static const uint8_t  WOM_THRESHOLD_MG = 120;  // pick-up strength, not desk bumps
+
+// Swap the IMU from pedometer duty to a wake-on-motion source. Direct
+// registers, not qmi.configWakeOnMotion(): SensorLib resets the chip first,
+// which restores the CTRL9-handshake-on-INT1-pin default, so its writeCommand
+// times out silently (same trap as the pedometer init). Harmless across the
+// wake reboot — setup()'s qmi.begin() resets the chip again.
+static bool imuWakeOnMotionInit(uint8_t thresholdMg) {
+  imuWriteReg(0x60, 0xB0);                     // soft reset
+  uint32_t t0 = millis();
+  while (imuReadReg(0x4D) != 0x80) {           // reset-done flag
+    if (millis() - t0 > 500) { Serial.println("wom: reset timeout"); return false; }
+    delay(10);
+  }
+  imuWriteReg(0x02, 0x40);                     // CTRL1: register auto-increment
+  imuWriteReg(0x09, imuReadReg(0x09) | 0x80);  // CTRL8: CTRL9 handshake -> STATUSINT
+  imuWriteReg(0x08, 0x00);                     // CTRL7: sensors off while configuring
+  imuWriteReg(0x03, (2 << 4) | 13);            // CTRL2: ±8g, low-power 21 Hz
+  imuWriteReg(0x0B, thresholdMg);              // CAL1_L: WoM threshold, 1 mg/LSB
+  imuWriteReg(0x0C, (0x01 << 6) | 0x20);       // CAL1_H: INT2, idle low + 32-sample blanking (~1.5 s)
+  if (!imuCtrl9Cmd(0x08)) return false;        // CTRL_CMD_WRITE_WOM_SETTING
+  imuWriteReg(0x08, 0x01);                     // CTRL7: accel back on (low-power mode)
+  imuWriteReg(0x02, imuReadReg(0x02) | 0x10);  // CTRL1: INT2 pin output enable
+  return true;
+}
+
+static void enterAutoSleep() {
+  Serial.println("autosleep: idle timeout - deep sleep (pick up or press BOOT to wake)");
+  Serial.flush();
+  storage.savePet(pet.getState());
+  storage.saveHabits(habits);
+  storage.saveStepState(stepState);
+  gfx->setBrightness(0);
+  gfx->displayOff();                            // CO5300 sleep-in
+  if (imuOk && imuWakeOnMotionInit(WOM_THRESHOLD_MG))
+    esp_sleep_enable_ext1_wakeup(1ULL << 21, ESP_EXT1_WAKEUP_ANY_HIGH);  // pickup
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);  // BOOT press always works
+  esp_deep_sleep_start();                       // never returns; wake = fresh boot
+}
+
 static void lvglTickCB(void* arg) { lv_tick_inc(2); }
 
 void setup() {
@@ -482,6 +534,12 @@ void setup() {
         rr == ESP_RST_TASK_WDT ? "task watchdog"  :
         rr == ESP_RST_WDT      ? "other watchdog" :
         rr == ESP_RST_BROWNOUT ? "brownout"       : "other");
+    if (rr == ESP_RST_DEEPSLEEP) {
+      esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
+      Serial.printf("boot: autosleep wake by %s\n",
+          wc == ESP_SLEEP_WAKEUP_EXT0 ? "BOOT button" :
+          wc == ESP_SLEEP_WAKEUP_EXT1 ? "pickup (IMU)" : "other");
+    }
   }
 
   Wire.begin(IIC_SDA, IIC_SCL);
@@ -987,6 +1045,30 @@ void loop() {
     }
   }
 
+  // ── Auto-sleep: a left-on device dims, then deep-sleeps ──────────────────
+  // Inhibited while USB-powered (docked = bridge sync), in pocket mode (step
+  // counting), during focus/back sessions, or while steps keep arriving
+  // (walking with the screen on never generates LVGL input activity).
+  {
+    static uint32_t lastIdleCheck = 0;
+    static bool     dimmed        = false;
+    if (millis() - lastIdleCheck > 1000) {
+      lastIdleCheck = millis();
+      uint32_t idle = lv_disp_get_inactive_time(NULL);
+      bool inhibited = pocketMode || ui.isFocusRunning() || ui.isBackRunning() ||
+                       (pmuOk && power.isVbusIn()) ||
+                       (swLastStepMs != 0 && millis() - swLastStepMs < AUTOSLEEP_MS);
+      if (inhibited || idle < AUTOSLEEP_DIM_MS) {
+        if (dimmed && !pocketMode) { dimmed = false; gfx->setBrightness(200); }
+      } else if (idle >= AUTOSLEEP_MS) {
+        enterAutoSleep();  // never returns
+      } else if (!dimmed) {
+        dimmed = true;
+        gfx->setBrightness(60);  // one-minute warning; any touch restores
+      }
+    }
+  }
+
   // ── BOOT button: short press = apps menu, hold 2 s = power off ────────────
   // Runtime GPIO0 is a free input (its strapping role only matters at reset).
   // Power-off saves state, blanks the panel, then tells the PMU to drop all
@@ -1010,6 +1092,7 @@ void loop() {
       // 50 ms floor debounces contact bounce; releases past 2 s only happen
       // without a PMU (shutdown never returns), so treat those as holds too.
       if (held >= 50 && held < 2000) {
+        lv_disp_trig_activity(NULL);  // button use counts against the auto-sleep idle clock
         if (pocketMode) {
           // Wake from pocket mode straight back into the walk screen.
           pocketMode = false;
