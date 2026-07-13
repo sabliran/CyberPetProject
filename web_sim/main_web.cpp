@@ -278,9 +278,6 @@ static void handle_sdl_events() {
           case SDLK_m:
             toggleDevMenu();
             break;
-          case SDLK_SPACE:
-            ui.addWorkoutRep();
-            break;
           case SDLK_s:
             ui.sedentaryNudge();
             break;

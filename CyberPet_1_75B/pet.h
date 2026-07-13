@@ -25,20 +25,19 @@ enum PetStage {
   STAGE_COUNT
 };
 
-// Workout difficulty — determines rep target required to earn one feeding.
-// Feeding no longer snaps hunger to 100: each workout restores FEED_HUNGER
-// (harder workout = bigger meal). Hunger decays ~2/hour continuously, so one
-// Medium workout roughly covers a day and Easy alone won't keep up — the pet
-// literally runs on your exercise.
-enum WorkoutDifficulty { DIFF_EASY = 0, DIFF_MEDIUM, DIFF_HARD };
-static const int WORKOUT_TARGETS[3] = { 15, 40, 80 };
-static const int FEED_HUNGER[3]     = { 30, 55, 90 };  // hunger restored per difficulty
-static const int FEED_MOOD[3]       = { 10, 15, 25 };  // mood boost per difficulty
+// Feeding doesn't snap hunger to 100: each completed exercise session
+// restores a fixed meal (back/pull-up apps call feed(45, 12)) against the
+// continuous hourly decay — the pet literally runs on your exercise.
+// (The tap-counting workout app with its Easy/Medium/Hard targets was
+// removed July 2026 in favour of the IMU-counted apps.)
 
-// Continuous hunger decay: applied once per hour by loop() / the sim.
-// 2/hour ≈ 48/day, so a full belly lasts ~2 days of total neglect and a
-// daily Medium workout (+55) keeps pace.
-static const int HUNGER_DECAY_PER_HOUR = 2;
+// Continuous hunger decay: applied per wall-clock hour by loop() / the sim,
+// with NVS catch-up across sleep and power-off (storage.saveHungerClock).
+// 3/hour ≈ 72/day: an unattended day visibly starves the blob, an overnight
+// costs ~30, so mornings start hungry enough that a workout is truly needed.
+// (Raised from 2 in July 2026 — and until then the 1.75B never called the
+// tick at all, so hunger sat pinned at 100.)
+static const int HUNGER_DECAY_PER_HOUR = 3;
 
 // Mood below this threshold demotes the displayed stage by one (recoverable —
 // XP is never touched; raise mood above this and the stage returns immediately).
@@ -83,9 +82,8 @@ public:
   // Sleep app: 0 good, 1 medium, 2 bad. Good/medium lift mood + hunger;
   // bad costs XP, mood and hunger (see pet.cpp for the exact numbers).
   void logSleep(int quality);
-  // Call when a workout target is met. Restores `hungerAmount` (capped at 100)
-  // and boosts mood by `moodBoost` — pass FEED_HUNGER/FEED_MOOD[difficulty].
-  // Defaults match the old Medium-ish behaviour for callers that don't care.
+  // Call when an exercise target is met. Restores `hungerAmount` (capped at
+  // 100) and boosts mood by `moodBoost` (back/pull-up apps pass 45, 12).
   void feed(int hungerAmount = 55, int moodBoost = 15);
   // Continuous hunger decay — call once per real hour (loop()/sim timer).
   // Death still only happens at dailyTick (a full unfed day at 0 hunger).

@@ -866,7 +866,11 @@ function drawMotion(cap) {
   const g = cap.samples.map(v => v / 1000);
   const rate = cap.rate || 66;
   const isBack = cap.label === 'back';
-  const det = isBack ? motionDetectBack(g, rate) : motionDetectPull(g, rate);
+  const isWorkout = isBack || cap.label === 'pullup';
+  // quake captures are ||a|-1g| deviation, not raw |a| — plot as-is, no rep replay
+  const det = isBack ? motionDetectBack(g, rate)
+            : isWorkout ? motionDetectPull(g, rate)
+            : { reps: [], armedAt: null };
   const cfg = isBack ? MOTION_BACK : MOTION_PULL;
 
   const lo = Math.min(0.6, Math.min(...g) - 0.05);
@@ -882,11 +886,13 @@ function drawMotion(cap) {
     ctx.fillStyle = color; ctx.font = '10px monospace';
     ctx.fillText(`${label} ${v.toFixed(2)}g`, 6, Y(v) - 3);
   };
-  guide(1.0, '#2A2A44', '');
-  guide(cfg.trigger, '#60D080', 'trigger');
-  if (!isBack) {
-    guide(cfg.dip, '#A080FF', 'dip');
-    guide(cfg.ceiling, '#E05060', 'ceiling');
+  if (isWorkout) {
+    guide(1.0, '#2A2A44', '');
+    guide(cfg.trigger, '#60D080', 'trigger');
+    if (!isBack) {
+      guide(cfg.dip, '#A080FF', 'dip');
+      guide(cfg.ceiling, '#E05060', 'ceiling');
+    }
   }
 
   // stillness-gate marker
@@ -920,7 +926,8 @@ function drawMotion(cap) {
     <span><b>${escapeHtml(cap.label)}</b> · ${new Date(cap.at).toLocaleString()}</span>
     <span><b>${dur.toFixed(1)}</b> s · ${g.length} samples @ ${rate} Hz</span>
     <span>peak <b>${Math.max(...g).toFixed(2)}g</b> · min <b>${Math.min(...g).toFixed(2)}g</b></span>
-    <span><b class="pullup-num">${det.reps.length}</b> reps detected</span>`;
+    ${isWorkout ? `<span><b class="pullup-num">${det.reps.length}</b> reps detected</span>`
+                : `<span>quake event capture (deviation from 1g, 3s pre-trigger)</span>`}`;
 }
 
 let motionFiles = [];

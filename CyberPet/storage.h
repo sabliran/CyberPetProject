@@ -83,6 +83,16 @@ public:
   void savePullupSessions(uint32_t n);
   uint32_t loadPullupSessions();
 
+  // Hunger decay clock: absolute wall-clock hour index of the last applied
+  // decay tick, so hunger catches up across deep sleep and power-off.
+  void saveHungerClock(uint32_t hourIndex);
+  uint32_t loadHungerClock();
+
+  // Device settings (swipe-up screen): volume, sounds, brightness, pet bg,
+  // auto-sleep. Blob, change-guarded; load returns defaults when absent.
+  void saveDeviceSettings(const DeviceSettings& s);
+  DeviceSettings loadDeviceSettings();
+
   // Focus app: lifetime completed 25-min blocks.
   void saveFocusSessions(uint32_t n);
   uint32_t loadFocusSessions();

@@ -202,6 +202,28 @@ uint32_t Storage::loadPullupSessions() {
   return prefs.getUInt("pull_sessions", 0);
 }
 
+void Storage::saveHungerClock(uint32_t hourIndex) {
+  if (loadHungerClock() == hourIndex) return;
+  prefs.putUInt("hunger_hour", hourIndex);
+}
+
+uint32_t Storage::loadHungerClock() {
+  return prefs.getUInt("hunger_hour", 0);
+}
+
+void Storage::saveDeviceSettings(const DeviceSettings& s) {
+  DeviceSettings cur = loadDeviceSettings();
+  if (memcmp(&cur, &s, sizeof(DeviceSettings)) == 0) return;
+  prefs.putBytes("dev_settings", &s, sizeof(DeviceSettings));
+}
+
+DeviceSettings Storage::loadDeviceSettings() {
+  DeviceSettings s = { 100, 0, 200, 0, 2 };  // defaults mirror PetUI::init()
+  if (prefs.getBytesLength("dev_settings") == sizeof(DeviceSettings))
+    prefs.getBytes("dev_settings", &s, sizeof(DeviceSettings));
+  return s;
+}
+
 void Storage::saveFocusSessions(uint32_t n) {
   if (loadFocusSessions() == n) return;
   prefs.putUInt("focus_sessions", n);

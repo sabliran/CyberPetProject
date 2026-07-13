@@ -159,15 +159,14 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   batteryWarnShown = false;
   blobBaseX = blobBaseY = -1;
   eyeDriftX = eyeDriftY = 0;
-  workoutReps = 0; workoutRunning = false;
-  workoutDifficulty = DIFF_MEDIUM;
-  workoutElapsedMs = 0; workoutClockTimer = nullptr;
   pomState = POM_IDLE; pomLastTapMs = 0; pomRunning = false;
   pomBlocks = 0; pomStartMs = 0; pomElapsedMs = 0; pomClockTimer = nullptr;
   questCount = 0; goalCount = 0; trophyCount = 0;
   walkSteps = 0; walkSensorOk = false;
   backReps = 0; backRunning = false;
   pullupReps = 0; pullupRunning = false;
+  quakeArmed = false; quakeEvents = 0;
+  devSettings = { 100, 0, 200, 0, 2 };  // volume, theme, brightness, bg, sleep-min
   pushReps = 0; pushRunning = false; lastPushTapMs = 0;
   sleepLogged = false; sleepQuality = 0;
   lastGestureMs = 0; lastPatMs = 0; syncRequested = false;
@@ -181,11 +180,12 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   buildAppsScreen();
   buildBackScreen();
   buildPullupScreen();
+  buildQuakeScreen();
+  buildSettingsScreen();
   buildPushScreen();
   buildTrophyScreen();
   buildSleepScreen();
   buildWalkScreen();
-  buildWorkoutScreen();
   buildPomodoroScreen();
   sedentaryTimer = lv_timer_create(sedentaryCheckCB, SEDENTARY_CHECK_MS, this);
 
@@ -306,7 +306,7 @@ void PetUI::buildPetScreen() {
   lv_obj_t* hint = lv_label_create(petScreen);
   lv_label_set_text(hint,
       LV_SYMBOL_LEFT " habits    " LV_SYMBOL_RIGHT " quests\n"
-      LV_SYMBOL_UP " workout   " LV_SYMBOL_DOWN " focus");
+      LV_SYMBOL_UP " settings   " LV_SYMBOL_DOWN " focus");
   lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -40);
   lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
@@ -1375,7 +1375,7 @@ void PetUI::petGestureCB(lv_event_t* e) {
       self->showQuestScreen();
       break;
     case LV_DIR_TOP:
-      self->showWorkoutScreen();
+      self->showSettingsScreen();
       break;
     case LV_DIR_BOTTOM:
       self->pomState = POM_IDLE;  // always start fresh from the pet screen
@@ -1398,17 +1398,6 @@ void PetUI::habitGestureCB(lv_event_t* e) {
   self->showPetScreen();
 }
 
-void PetUI::workoutGestureCB(lv_event_t* e) {
-  // Opened with swipe up; swipe down closes (same cleanup as the Cancel button).
-  PetUI* self = (PetUI*)lv_event_get_user_data(e);
-  self->lastGestureMs = lv_tick_get();
-  // Also swallows the release-click that would otherwise land on the rep
-  // tap zone and count a phantom rep.
-  lv_indev_wait_release(lv_indev_get_act());
-  if (lv_indev_get_gesture_dir(lv_indev_get_act()) != LV_DIR_BOTTOM) return;
-  workoutBackBtnCB(e);
-}
-
 void PetUI::pomGestureCB(lv_event_t* e) {
   // Opened with swipe down; swipe up closes (same cleanup as the Cancel button).
   PetUI* self = (PetUI*)lv_event_get_user_data(e);
@@ -1427,14 +1416,16 @@ struct AppEntry {
   const char* name;
   uint32_t    color;
 };
-// Workout and focus are deliberately absent: they already have dedicated
-// swipes on the pet screen (up / down); the menu is for apps that don't.
+// Focus is deliberately absent: it has a dedicated swipe on the pet screen
+// (down); the menu is for apps that don't. (The old tap-counting workout app
+// was removed July 2026 — the IMU-counted back/pull-up apps replaced it.)
 static const AppEntry APP_ENTRIES[] = {
   { LV_SYMBOL_GPS,       "walk",     0x50A8E8 },
   { LV_SYMBOL_REFRESH,   "back",     0xFFA050 },
   { LV_SYMBOL_DOWN,      "push-ups", 0xF06090 },
   { LV_SYMBOL_UP,        "pull-ups", 0x60D080 },
   { LV_SYMBOL_EYE_CLOSE, "sleep",    0xA080FF },
+  { LV_SYMBOL_WARNING,   "quake",    0xE05060 },
   { LV_SYMBOL_OK,        "trophies", 0xFFD060 },
 };
 static const int APP_COUNT = sizeof(APP_ENTRIES) / sizeof(APP_ENTRIES[0]);
@@ -1450,17 +1441,30 @@ void PetUI::buildAppsScreen() {
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 40);
   lv_obj_set_style_text_color(title, lv_color_hex(0xA080FF), 0);
 
-  // One big rounded button per app, stacked around screen center.
-  // 5+ entries need slimmer buttons to stay clear of the title and hint
-  // inside the round glass.
-  const int btnH = APP_COUNT > 5 ? 48 : APP_COUNT > 4 ? 56 : 72;
-  const int gap  = APP_COUNT > 5 ? 8  : APP_COUNT > 4 ? 12 : 20;
-  const int pitch = btnH + gap;
+  // Up to 4 apps: one big rounded button per app, stacked around center.
+  // More than 4: a two-column grid — a single column would need sliver-thin
+  // buttons to fit the round glass (44 px at 7 apps), while 160x68 grid
+  // cells stay comfortably finger-sized. An odd last entry gets a centered
+  // full-width row. Grid extents (4 rows = 296 px tall, 328 px wide) clear
+  // the 466 px circle: at the top row's edge (y=85) the glass is 360 wide.
+  const bool grid = APP_COUNT > 4;
+  const int  bw = 160, bh = 68, gx = 8, gy = 8;   // grid cell + gaps
+  const int  rows = (APP_COUNT + 1) / 2;
+  const int  btnH = 72, gap = 20, pitch = btnH + gap;  // single-column sizes
   for (int i = 0; i < APP_COUNT; i++) {
     lv_obj_t* btn = lv_btn_create(appsScreen);
-    lv_obj_set_size(btn, 280, btnH);
-    lv_obj_align(btn, LV_ALIGN_CENTER, 0,
-                 i * pitch - ((APP_COUNT - 1) * pitch) / 2);
+    if (grid) {
+      bool lastOdd = (i == APP_COUNT - 1) && (APP_COUNT % 2 == 1);
+      int row = i / 2, col = i % 2;
+      lv_obj_set_size(btn, lastOdd ? 2 * bw + gx : bw, bh);
+      lv_obj_align(btn, LV_ALIGN_CENTER,
+                   lastOdd ? 0 : (col ? (bw + gx) / 2 : -(bw + gx) / 2),
+                   row * (bh + gy) - ((rows - 1) * (bh + gy)) / 2);
+    } else {
+      lv_obj_set_size(btn, 280, btnH);
+      lv_obj_align(btn, LV_ALIGN_CENTER, 0,
+                   i * pitch - ((APP_COUNT - 1) * pitch) / 2);
+    }
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x10101E), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, 20, 0);
@@ -1514,6 +1518,9 @@ void PetUI::appsBtnCB(lv_event_t* e) {
       self->showSleepScreen();
       break;
     case 5:
+      self->showQuakeScreen();
+      break;
+    case 6:
       self->showTrophyScreen();
       break;
     default:
@@ -1858,6 +1865,335 @@ void PetUI::pullupGestureCB(lv_event_t* e) {
   self->showPetScreen();
 }
 
+/* ---- quake watch screen ---------------------------------------------- */
+
+void PetUI::buildQuakeScreen() {
+  quakeScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(quakeScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(quakeScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* title = lv_label_create(quakeScreen);
+  lv_label_set_text(title, "QUAKE WATCH");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xE05060), 0);
+
+  quakeStatusLabel = lv_label_create(quakeScreen);
+  lv_label_set_text(quakeStatusLabel, "flat surface, press ARM");
+  lv_obj_set_style_text_color(quakeStatusLabel, lv_color_hex(0x8A8AA8), 0);
+  lv_obj_align(quakeStatusLabel, LV_ALIGN_CENTER, 0, -118);
+
+  // Live seismograph: signed |a|-1g deviation in mg, shifted left per sample.
+  quakeChart = lv_chart_create(quakeScreen);
+  lv_obj_set_size(quakeChart, 360, 140);
+  lv_obj_align(quakeChart, LV_ALIGN_CENTER, 0, -22);
+  lv_obj_set_style_bg_color(quakeChart, lv_color_hex(0x0A0A14), 0);
+  lv_obj_set_style_border_width(quakeChart, 0, 0);
+  lv_obj_set_style_size(quakeChart, 0, LV_PART_INDICATOR);  // no point dots
+  lv_chart_set_type(quakeChart, LV_CHART_TYPE_LINE);
+  lv_chart_set_point_count(quakeChart, 150);
+  lv_chart_set_range(quakeChart, LV_CHART_AXIS_PRIMARY_Y, -60, 60);
+  lv_chart_set_update_mode(quakeChart, LV_CHART_UPDATE_MODE_SHIFT);
+  lv_chart_set_div_line_count(quakeChart, 3, 0);
+  quakeSeries = lv_chart_add_series(quakeChart, lv_color_hex(0x50A8E8),
+                                    LV_CHART_AXIS_PRIMARY_Y);
+  lv_chart_set_all_value(quakeChart, quakeSeries, 0);
+
+  quakeStatsLabel = lv_label_create(quakeScreen);
+  lv_label_set_text(quakeStatsLabel, "events: 0");
+  lv_obj_set_style_text_color(quakeStatsLabel, lv_color_hex(0x4A4A66), 0);
+  lv_obj_align(quakeStatsLabel, LV_ALIGN_CENTER, 0, 66);
+
+  lv_obj_t* btn = lv_btn_create(quakeScreen);
+  lv_obj_set_size(btn, 240, 56);
+  lv_obj_align(btn, LV_ALIGN_CENTER, 0, 122);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0x200810), 0);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(btn, 16, 0);
+  lv_obj_set_style_border_width(btn, 2, 0);
+  lv_obj_set_style_border_color(btn, lv_color_hex(0xE05060), 0);
+  quakeBtnLabel = lv_label_create(btn);
+  lv_label_set_text(quakeBtnLabel, LV_SYMBOL_PLAY "  ARM");
+  lv_obj_set_style_text_color(quakeBtnLabel, lv_color_hex(0xE05060), 0);
+  lv_obj_center(quakeBtnLabel);
+  lv_obj_add_event_cb(btn, quakeBtnCB, LV_EVENT_CLICKED, this);
+
+  lv_obj_t* hint = lv_label_create(quakeScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -34);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(quakeScreen, quakeGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::showQuakeScreen() {
+  quakeArmed = false;
+  quakeEvents = 0;
+  lv_label_set_text(quakeStatusLabel, "flat surface, press ARM");
+  lv_obj_set_style_text_color(quakeStatusLabel, lv_color_hex(0x8A8AA8), 0);
+  lv_label_set_text(quakeStatsLabel, "events: 0");
+  lv_label_set_text(quakeBtnLabel, LV_SYMBOL_PLAY "  ARM");
+  lv_obj_set_style_bg_color(quakeScreen, lv_color_hex(0x000000), 0);
+  lv_chart_set_all_value(quakeChart, quakeSeries, 0);
+  lv_scr_load_anim(quakeScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+void PetUI::pushQuakeSample(int devMilliG) {
+  if (!quakeArmed || lv_scr_act() != quakeScreen) return;
+  if (devMilliG > 60) devMilliG = 60;
+  if (devMilliG < -60) devMilliG = -60;
+  lv_chart_set_next_value(quakeChart, quakeSeries, devMilliG);
+}
+
+void PetUI::quakeTriggered() {
+  quakeEvents++;
+  lv_label_set_text(quakeStatusLabel, "!!  SHAKING DETECTED  !!");
+  lv_obj_set_style_text_color(quakeStatusLabel, lv_color_hex(0xFF4050), 0);
+  lv_obj_set_style_bg_color(quakeScreen, lv_color_hex(0x2A0410), 0);
+  if (soundCB) soundCB(SOUND_QUAKE);
+}
+
+void PetUI::quakeCalm(int peakMilliG) {
+  lv_label_set_text(quakeStatusLabel, "monitoring");
+  lv_obj_set_style_text_color(quakeStatusLabel, lv_color_hex(0x8A8AA8), 0);
+  lv_obj_set_style_bg_color(quakeScreen, lv_color_hex(0x000000), 0);
+  lv_label_set_text_fmt(quakeStatsLabel, "events: %d  ·  last peak %d mg",
+                        quakeEvents, peakMilliG);
+}
+
+void PetUI::quakeBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  self->quakeArmed = !self->quakeArmed;
+  if (self->quakeArmed) {
+    lv_label_set_text(self->quakeStatusLabel, "monitoring");
+    lv_obj_set_style_text_color(self->quakeStatusLabel, lv_color_hex(0x8A8AA8), 0);
+    lv_label_set_text(self->quakeBtnLabel, LV_SYMBOL_STOP "  STOP");
+  } else {
+    lv_label_set_text(self->quakeStatusLabel, "flat surface, press ARM");
+    lv_label_set_text(self->quakeBtnLabel, LV_SYMBOL_PLAY "  ARM");
+    lv_obj_set_style_bg_color(self->quakeScreen, lv_color_hex(0x000000), 0);
+  }
+}
+
+void PetUI::quakeGestureCB(lv_event_t* e) {
+  // Any swipe disarms the watch and returns to the pet.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->quakeArmed = false;
+  self->showPetScreen();
+}
+
+/* ---- settings screen ------------------------------------------------- */
+
+// Pet-screen background palette (index = DeviceSettings.petBg). Dark tints
+// only: the AMOLED's per-pixel power and the sprite's contrast both want a
+// near-black stage.
+static const uint32_t PET_BG_COLORS[5] =
+  { 0x000000, 0x0A1428, 0x081810, 0x160826, 0x1C1206 };
+static const char*    PET_BG_NAMES[5] =
+  { "black", "night", "forest", "plum", "ember" };
+static const uint8_t  SLEEP_CHOICES[4] = { 1, 2, 5, 10 };
+static const char*    THEME_NAMES[3]   = { "classic", "arcade", "soft" };
+
+// Small section label helper, shared by all settings rows.
+static lv_obj_t* settingsLabel(lv_obj_t* parent, const char* text, int y) {
+  lv_obj_t* l = lv_label_create(parent);
+  lv_label_set_text(l, text);
+  lv_obj_align(l, LV_ALIGN_TOP_MID, 0, y);
+  lv_obj_set_style_text_color(l, lv_color_hex(0x4A4A66), 0);
+  lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+  return l;
+}
+
+void PetUI::buildSettingsScreen() {
+  settingsScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(settingsScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(settingsScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* title = lv_label_create(settingsScreen);
+  lv_label_set_text(title, "SETTINGS");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 26);
+  lv_obj_set_style_text_color(title, lv_color_hex(0x8A9AB8), 0);
+
+  // volume
+  settingsLabel(settingsScreen, "volume", 62);
+  setVolSlider = lv_slider_create(settingsScreen);
+  lv_obj_set_size(setVolSlider, 240, 14);
+  lv_obj_align(setVolSlider, LV_ALIGN_TOP_MID, 0, 86);
+  lv_slider_set_range(setVolSlider, 0, 100);
+  lv_obj_set_style_bg_color(setVolSlider, lv_color_hex(0x1A1A2E), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(setVolSlider, lv_color_hex(0x50A8E8), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(setVolSlider, lv_color_hex(0xC8D0E0), LV_PART_KNOB);
+  lv_obj_add_event_cb(setVolSlider, setVolSliderCB, LV_EVENT_RELEASED, this);
+
+  // sound theme
+  settingsLabel(settingsScreen, "sounds", 118);
+  for (int i = 0; i < 3; i++) {
+    lv_obj_t* btn = lv_btn_create(settingsScreen);
+    lv_obj_set_size(btn, 92, 36);
+    lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 1) * 100, 140);
+    lv_obj_set_style_radius(btn, 10, 0);
+    lv_obj_t* lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, THEME_NAMES[i]);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(lbl);
+    lv_obj_set_user_data(btn, (void*)(intptr_t)i);
+    lv_obj_add_event_cb(btn, setThemeBtnCB, LV_EVENT_CLICKED, this);
+    setThemeBtns[i] = btn;
+  }
+
+  // brightness
+  settingsLabel(settingsScreen, "brightness", 190);
+  setBriSlider = lv_slider_create(settingsScreen);
+  lv_obj_set_size(setBriSlider, 240, 14);
+  lv_obj_align(setBriSlider, LV_ALIGN_TOP_MID, 0, 214);
+  lv_slider_set_range(setBriSlider, 20, 255);   // 20 floor: never invisible
+  lv_obj_set_style_bg_color(setBriSlider, lv_color_hex(0x1A1A2E), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(setBriSlider, lv_color_hex(0xFFD060), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(setBriSlider, lv_color_hex(0xC8D0E0), LV_PART_KNOB);
+  lv_obj_add_event_cb(setBriSlider, setBriSliderCB, LV_EVENT_VALUE_CHANGED, this);
+
+  // pet background
+  settingsLabel(settingsScreen, "pet background", 246);
+  for (int i = 0; i < 5; i++) {
+    lv_obj_t* btn = lv_btn_create(settingsScreen);
+    lv_obj_set_size(btn, 40, 36);
+    lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 2) * 48, 268);
+    lv_obj_set_style_radius(btn, 10, 0);
+    // swatch shows the actual color; black gets a faint fill to stay visible
+    lv_obj_set_style_bg_color(btn, lv_color_hex(i ? PET_BG_COLORS[i] : 0x14141E), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_user_data(btn, (void*)(intptr_t)i);
+    lv_obj_add_event_cb(btn, setBgBtnCB, LV_EVENT_CLICKED, this);
+    setBgBtns[i] = btn;
+  }
+
+  // auto-sleep timeout
+  settingsLabel(settingsScreen, "auto-sleep", 316);
+  for (int i = 0; i < 4; i++) {
+    lv_obj_t* btn = lv_btn_create(settingsScreen);
+    lv_obj_set_size(btn, 56, 36);
+    lv_obj_align(btn, LV_ALIGN_TOP_MID, (i * 64) - 96, 338);
+    lv_obj_set_style_radius(btn, 10, 0);
+    lv_obj_t* lbl = lv_label_create(btn);
+    lv_label_set_text_fmt(lbl, "%dm", SLEEP_CHOICES[i]);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(lbl);
+    lv_obj_set_user_data(btn, (void*)(intptr_t)i);
+    lv_obj_add_event_cb(btn, setSleepBtnCB, LV_EVENT_CLICKED, this);
+    setSleepBtns[i] = btn;
+  }
+
+  lv_obj_t* hint = lv_label_create(settingsScreen);
+  lv_label_set_text(hint, "swipe down to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -28);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(settingsScreen, settingsGestureCB, LV_EVENT_GESTURE, this);
+}
+
+// Highlight helper: selected option gets a colored border, others go dim.
+static void settingsMarkSelected(lv_obj_t* const* btns, int n, int selected,
+                                 uint32_t accent) {
+  for (int i = 0; i < n; i++) {
+    lv_obj_set_style_border_width(btns[i], 2, 0);
+    lv_obj_set_style_border_color(btns[i],
+        lv_color_hex(i == selected ? accent : 0x2A2A44), 0);
+    if (lv_obj_get_child(btns[i], 0))
+      lv_obj_set_style_text_color(lv_obj_get_child(btns[i], 0),
+          lv_color_hex(i == selected ? accent : 0x6A6A88), 0);
+    lv_obj_set_style_bg_color(btns[i], lv_color_hex(0x10101E), 0);
+    lv_obj_set_style_bg_opa(btns[i], LV_OPA_COVER, 0);
+  }
+}
+
+void PetUI::applySettingsVisuals() {
+  lv_slider_set_value(setVolSlider, devSettings.volumePct, LV_ANIM_OFF);
+  lv_slider_set_value(setBriSlider, devSettings.brightness, LV_ANIM_OFF);
+  settingsMarkSelected(setThemeBtns, 3, devSettings.soundTheme, 0x50A8E8);
+  int sleepIdx = 1;
+  for (int i = 0; i < 4; i++)
+    if (SLEEP_CHOICES[i] == devSettings.sleepMin) sleepIdx = i;
+  settingsMarkSelected(setSleepBtns, 4, sleepIdx, 0xA080FF);
+  // bg swatches keep their color fill; selection = border only
+  for (int i = 0; i < 5; i++) {
+    lv_obj_set_style_border_width(setBgBtns[i], 2, 0);
+    lv_obj_set_style_border_color(setBgBtns[i],
+        lv_color_hex(i == devSettings.petBg ? 0xFFD060 : 0x2A2A44), 0);
+    lv_obj_set_style_bg_color(setBgBtns[i],
+        lv_color_hex(i ? PET_BG_COLORS[i] : 0x14141E), 0);
+  }
+  lv_obj_set_style_bg_color(petScreen,
+      lv_color_hex(PET_BG_COLORS[devSettings.petBg < 5 ? devSettings.petBg : 0]), 0);
+}
+
+void PetUI::setDeviceSettings(const DeviceSettings& s) {
+  devSettings = s;
+  if (devSettings.petBg >= 5) devSettings.petBg = 0;
+  if (devSettings.soundTheme >= 3) devSettings.soundTheme = 0;
+  if (devSettings.brightness < 20) devSettings.brightness = 20;
+  applySettingsVisuals();
+}
+
+void PetUI::showSettingsScreen() {
+  applySettingsVisuals();
+  lv_scr_load_anim(settingsScreen, LV_SCR_LOAD_ANIM_MOVE_TOP, 200, 0, false);
+}
+
+void PetUI::setVolSliderCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->devSettings.volumePct = (uint8_t)lv_slider_get_value(self->setVolSlider);
+  if (self->settingsCB) self->settingsCB(self->devSettings);
+  if (self->soundCB) self->soundCB(SOUND_HABIT_DONE);  // volume preview
+}
+
+void PetUI::setBriSliderCB(lv_event_t* e) {
+  // VALUE_CHANGED (not RELEASED): brightness previews live while dragging.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->devSettings.brightness = (uint8_t)lv_slider_get_value(self->setBriSlider);
+  if (self->settingsCB) self->settingsCB(self->devSettings);
+}
+
+void PetUI::setThemeBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  self->devSettings.soundTheme =
+      (uint8_t)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+  self->applySettingsVisuals();
+  if (self->settingsCB) self->settingsCB(self->devSettings);
+  if (self->soundCB) self->soundCB(SOUND_HABIT_DONE);  // theme preview
+}
+
+void PetUI::setBgBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  self->devSettings.petBg =
+      (uint8_t)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+  self->applySettingsVisuals();
+  if (self->settingsCB) self->settingsCB(self->devSettings);
+}
+
+void PetUI::setSleepBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+  self->devSettings.sleepMin = SLEEP_CHOICES[idx];
+  self->applySettingsVisuals();
+  if (self->settingsCB) self->settingsCB(self->devSettings);
+}
+
+void PetUI::settingsGestureCB(lv_event_t* e) {
+  // Opened with swipe up; swipe down closes.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  if (lv_indev_get_gesture_dir(lv_indev_get_act()) != LV_DIR_BOTTOM) return;
+  self->showPetScreen();
+}
+
 /* ---- trophy screen ------------------------------------------------- */
 
 void PetUI::buildTrophyScreen() {
@@ -2194,294 +2530,6 @@ void PetUI::walkGestureCB(lv_event_t* e) {
   self->lastGestureMs = lv_tick_get();
   lv_indev_wait_release(lv_indev_get_act());
   self->showPetScreen();
-}
-
-/* ---- workout screen --------------------------------------------- */
-
-// Applies the selected/unselected style to all three difficulty buttons.
-// Called once at build time and again whenever the selection changes.
-static void applyDiffStyles(lv_obj_t* btns[3], int selected) {
-  // per-difficulty: border color, text color, bg when selected
-  static const uint32_t SEL_BG[3]     = { 0x0F3820, 0x2A1C00, 0x3A0808 };
-  static const uint32_t SEL_BORDER[3] = { 0x3EE8A0, 0xD4A030, 0xE85050 };
-  static const uint32_t SEL_TEXT[3]   = { 0x3EE8A0, 0xFFD060, 0xFF8080 };
-  static const uint32_t OFF_BG        = 0x0A0A0A;
-  static const uint32_t OFF_BORDER[3] = { 0x1A3A25, 0x3A2A00, 0x3A1010 };
-  static const uint32_t OFF_TEXT[3]   = { 0x2A6040, 0x5A4010, 0x6A2020 };
-
-  for (int i = 0; i < 3; i++) {
-    bool on = (i == selected);
-    lv_obj_set_style_bg_color(btns[i], lv_color_hex(on ? SEL_BG[i] : OFF_BG), 0);
-    lv_obj_set_style_border_color(btns[i], lv_color_hex(on ? SEL_BORDER[i] : OFF_BORDER[i]), 0);
-    lv_obj_t* lbl = lv_obj_get_child(btns[i], 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(on ? SEL_TEXT[i] : OFF_TEXT[i]), 0);
-  }
-}
-
-void PetUI::buildWorkoutScreen() {
-  workoutScreen = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(workoutScreen, lv_color_hex(0x000000), 0);
-  lv_obj_set_style_pad_all(workoutScreen, 0, 0);
-  lv_obj_clear_flag(workoutScreen, LV_OBJ_FLAG_SCROLLABLE);
-
-  lv_obj_t* title = lv_label_create(workoutScreen);
-  lv_label_set_text(title, "WORKOUT");
-  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 14);
-  lv_obj_set_style_text_color(title, lv_color_hex(0x3EE8A0), 0);
-
-  // Difficulty selector — 3 buttons near the top, narrowed for the round
-  // glass: 3×90px with 8px gaps centered (x=90..376) at y=56, where the
-  // visible circle is ~288px wide.
-  static const char* DIFF_LABELS[3] = { "Easy", "Medium", "Hard" };
-  for (int i = 0; i < 3; i++) {
-    lv_obj_t* btn = lv_btn_create(workoutScreen);
-    lv_obj_set_size(btn, 90, 26);
-    lv_obj_set_pos(btn, 90 + i * 98, 56);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(btn, 6, 0);
-    lv_obj_set_style_border_width(btn, 2, 0);
-    lv_obj_set_style_pad_all(btn, 0, 0);
-    lv_obj_t* lbl = lv_label_create(btn);
-    lv_label_set_text(lbl, DIFF_LABELS[i]);
-    // 90×26 buttons: "Medium" at the 20 pt default overflows, keep these small.
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(lbl);
-    lv_obj_set_user_data(btn, (void*)(intptr_t)i);
-    lv_obj_add_event_cb(btn, workoutDiffBtnCB, LV_EVENT_CLICKED, this);
-    diffBtns[i] = btn;
-  }
-  applyDiffStyles(diffBtns, workoutDifficulty);
-
-  // Main tap zone — starts below difficulty buttons (y=92)
-  lv_obj_t* tapZone = lv_obj_create(workoutScreen);
-  lv_obj_set_size(tapZone, 340, 150);
-  lv_obj_set_pos(tapZone, 63, 92);
-  lv_obj_set_style_bg_color(tapZone, lv_color_hex(0x080818), 0);
-  lv_obj_set_style_bg_opa(tapZone, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(tapZone, 14, 0);
-  lv_obj_set_style_border_color(tapZone, lv_color_hex(0x2A2A6A), 0);
-  lv_obj_set_style_border_width(tapZone, 2, 0);
-  lv_obj_set_style_pad_all(tapZone, 0, 0);
-  lv_obj_clear_flag(tapZone, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_flag(tapZone, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(tapZone, workoutTapCB, LV_EVENT_CLICKED, this);
-
-  repLabel = lv_label_create(tapZone);
-  lv_label_set_text(repLabel, "0");
-  lv_obj_set_style_text_font(repLabel, &lv_font_montserrat_32, 0);
-  lv_obj_set_style_text_color(repLabel, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_align(repLabel, LV_ALIGN_CENTER, 0, -18);
-
-  lv_obj_t* repUnit = lv_label_create(tapZone);
-  lv_label_set_text(repUnit, "REPS");
-  lv_obj_set_style_text_color(repUnit, lv_color_hex(0x5080A0), 0);
-  lv_obj_align(repUnit, LV_ALIGN_CENTER, 0, 18);
-
-  workoutHint = lv_label_create(tapZone);
-  lv_label_set_text(workoutHint, "press START");
-  lv_obj_set_style_text_color(workoutHint, lv_color_hex(0x3A6050), 0);
-  lv_obj_align(workoutHint, LV_ALIGN_BOTTOM_MID, 0, -10);
-
-  // Timer label — below the tap zone (tap zone bottom = 92+150 = 242)
-  timerLabel = lv_label_create(workoutScreen);
-  lv_label_set_text(timerLabel, "00:00");
-  lv_obj_set_style_text_font(timerLabel, &lv_font_montserrat_20, 0);
-  lv_obj_set_style_text_color(timerLabel, lv_color_hex(0x6898B8), 0);
-  lv_obj_align(timerLabel, LV_ALIGN_TOP_MID, 0, 252);
-
-  // Layout (round 466∅, pad=0):
-  //   startBtn  165×44  pos(63,  300)
-  //   doneBtn   165×44  pos(238, 300)
-  //   backBtn   140×34  pos(163, 364)
-
-  // START / PAUSE button
-  lv_obj_t* startBtn = lv_btn_create(workoutScreen);
-  lv_obj_set_size(startBtn, 165, 44);
-  lv_obj_set_pos(startBtn, 63, 300);
-  lv_obj_set_style_bg_color(startBtn, lv_color_hex(0x0F3820), 0);
-  lv_obj_set_style_bg_opa(startBtn, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(startBtn, 10, 0);
-  lv_obj_set_style_border_color(startBtn, lv_color_hex(0x3EE8A0), 0);
-  lv_obj_set_style_border_width(startBtn, 2, 0);
-  workoutStartLabel = lv_label_create(startBtn);
-  lv_label_set_text(workoutStartLabel, LV_SYMBOL_PLAY "  START");
-  lv_obj_set_style_text_color(workoutStartLabel, lv_color_hex(0x3EE8A0), 0);
-  lv_obj_center(workoutStartLabel);
-  lv_obj_add_event_cb(startBtn, workoutStartBtnCB, LV_EVENT_CLICKED, this);
-
-  // DONE button
-  lv_obj_t* doneBtn = lv_btn_create(workoutScreen);
-  lv_obj_set_size(doneBtn, 165, 44);
-  lv_obj_set_pos(doneBtn, 238, 300);
-  lv_obj_set_style_bg_color(doneBtn, lv_color_hex(0x301A00), 0);
-  lv_obj_set_style_bg_opa(doneBtn, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(doneBtn, 10, 0);
-  lv_obj_set_style_border_color(doneBtn, lv_color_hex(0xD4A030), 0);
-  lv_obj_set_style_border_width(doneBtn, 2, 0);
-  workoutDoneLabel = lv_label_create(doneBtn);
-  lv_label_set_text(workoutDoneLabel, LV_SYMBOL_OK "  DONE");
-  lv_obj_set_style_text_color(workoutDoneLabel, lv_color_hex(0xFFD060), 0);
-  lv_obj_center(workoutDoneLabel);
-  lv_obj_add_event_cb(doneBtn, workoutDoneBtnCB, LV_EVENT_CLICKED, this);
-
-  // Cancel / back button
-  lv_obj_t* backBtn = lv_btn_create(workoutScreen);
-  lv_obj_set_size(backBtn, 140, 34);
-  lv_obj_set_pos(backBtn, 163, 364);
-  lv_obj_set_style_bg_color(backBtn, lv_color_hex(0x161630), 0);
-  lv_obj_set_style_bg_opa(backBtn, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(backBtn, 8, 0);
-  lv_obj_set_style_border_color(backBtn, lv_color_hex(0x6060C0), 0);
-  lv_obj_set_style_border_width(backBtn, 2, 0);
-  lv_obj_t* backLbl = lv_label_create(backBtn);
-  lv_label_set_text(backLbl, LV_SYMBOL_LEFT " Cancel");
-  lv_obj_set_style_text_color(backLbl, lv_color_hex(0xA0A0F0), 0);
-  lv_obj_center(backLbl);
-  lv_obj_add_event_cb(backBtn, workoutBackBtnCB, LV_EVENT_CLICKED, this);
-
-  lv_obj_t* exitHint = lv_label_create(workoutScreen);
-  lv_label_set_text(exitHint, "swipe " LV_SYMBOL_DOWN " for pet");
-  lv_obj_align(exitHint, LV_ALIGN_BOTTOM_MID, 0, -46);
-  lv_obj_set_style_text_color(exitHint, lv_color_hex(0x1A3028), 0);
-  lv_obj_set_style_text_font(exitHint, &lv_font_montserrat_14, 0);
-
-  lv_obj_add_event_cb(workoutScreen, workoutGestureCB, LV_EVENT_GESTURE, this);
-}
-
-void PetUI::showWorkoutScreen() {
-  workoutReps = 0;
-  workoutRunning = false;
-  workoutElapsedMs = 0;
-  if (workoutClockTimer) { lv_timer_del(workoutClockTimer); workoutClockTimer = nullptr; }
-
-  lv_label_set_text(repLabel, "0");
-  lv_label_set_text(timerLabel, "00:00");
-  lv_label_set_text(workoutStartLabel, LV_SYMBOL_PLAY "  START");
-  int target = WORKOUT_TARGETS[workoutDifficulty];
-  lv_label_set_text_fmt(workoutDoneLabel, LV_SYMBOL_OK "  DONE (need %d)", target);
-  lv_label_set_text(workoutHint, "press START");
-  applyDiffStyles(diffBtns, workoutDifficulty);
-
-  // Opened by swipe-up from the pet screen, so slide in from the bottom.
-  lv_scr_load_anim(workoutScreen, LV_SCR_LOAD_ANIM_MOVE_TOP, 200, 0, false);
-}
-
-void PetUI::addWorkoutRep() {
-  if (!workoutRunning) return;
-  workoutReps++;
-  lv_label_set_text_fmt(repLabel, "%d", workoutReps);
-  int target = WORKOUT_TARGETS[workoutDifficulty];
-  if (workoutReps >= target) {
-    lv_label_set_text_fmt(workoutDoneLabel, LV_SYMBOL_OK "  FEED! (%d/%d)", workoutReps, target);
-  } else {
-    lv_label_set_text_fmt(workoutDoneLabel, LV_SYMBOL_OK "  %d/%d", workoutReps, target);
-  }
-}
-
-void PetUI::workoutTapCB(lv_event_t* e) {
-  PetUI* self = (PetUI*)lv_event_get_user_data(e);
-  self->addWorkoutRep();
-}
-
-void PetUI::workoutStartBtnCB(lv_event_t* e) {
-  PetUI* self = (PetUI*)lv_event_get_user_data(e);
-  if (!self->workoutRunning) {
-    self->workoutRunning = true;
-    self->workoutStartMs = lv_tick_get();
-    lv_label_set_text(self->workoutStartLabel, LV_SYMBOL_PAUSE "  PAUSE");
-    lv_label_set_text(self->workoutHint, "tap here to count");
-    lv_obj_set_style_text_color(self->workoutHint, lv_color_hex(0x2A4A3A), 0);
-    if (!self->workoutClockTimer) {
-      self->workoutClockTimer = lv_timer_create(workoutClockCB, 500, self);
-    }
-  } else {
-    self->workoutElapsedMs += lv_tick_get() - self->workoutStartMs;
-    self->workoutRunning = false;
-    lv_label_set_text(self->workoutStartLabel, LV_SYMBOL_PLAY "  RESUME");
-    lv_label_set_text(self->workoutHint, "paused");
-    lv_obj_set_style_text_color(self->workoutHint, lv_color_hex(0x1A2A2A), 0);
-  }
-}
-
-void PetUI::workoutDoneBtnCB(lv_event_t* e) {
-  PetUI* self = (PetUI*)lv_event_get_user_data(e);
-  self->workoutRunning = false;
-  if (self->workoutClockTimer) { lv_timer_del(self->workoutClockTimer); self->workoutClockTimer = nullptr; }
-
-  int target = WORKOUT_TARGETS[self->workoutDifficulty];
-  if (self->workoutReps >= target) {
-    // Meal size scales with difficulty: a Hard workout nearly fills the
-    // belly, Easy is a snack that won't keep up with hunger decay alone.
-    self->pet->feed(FEED_HUNGER[self->workoutDifficulty],
-                    FEED_MOOD[self->workoutDifficulty]);
-    self->refreshPetScreen();
-    // Show "FED!" pill popup at screen center, lives on layer_top
-    lv_obj_t* pill = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(pill, 130, 44);
-    lv_obj_set_style_bg_color(pill, lv_color_hex(0x061A0E), 0);
-    lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(pill, 22, 0);
-    lv_obj_set_style_border_color(pill, lv_color_hex(0x3EE8A0), 0);
-    lv_obj_set_style_border_width(pill, 2, 0);
-    lv_obj_set_style_pad_all(pill, 0, 0);
-    lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(pill, 233 - 65, 233 - 22);
-    lv_obj_t* lbl = lv_label_create(pill);
-    lv_label_set_text_fmt(lbl, LV_SYMBOL_OK " FED +%d", FEED_HUNGER[self->workoutDifficulty]);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(0x3EE8A0), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
-    lv_obj_center(lbl);
-    // Float up + fade out
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, pill);
-    lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetY);
-    lv_anim_set_values(&a, 211, 211 - 90);
-    lv_anim_set_time(&a, 1400);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-    lv_anim_set_ready_cb(&a, xpPopupDeleteCB);
-    lv_anim_set_user_data(&a, pill);
-    lv_anim_start(&a);
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, pill);
-    lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)animSetOpa);
-    lv_anim_set_values(&a, LV_OPA_COVER, LV_OPA_TRANSP);
-    lv_anim_set_delay(&a, 500);
-    lv_anim_set_time(&a, 900);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
-    lv_anim_start(&a);
-  }
-
-  lv_scr_load_anim(self->habitScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 200, 500, false);
-  self->refreshHabitScreen();
-}
-
-void PetUI::workoutBackBtnCB(lv_event_t* e) {
-  PetUI* self = (PetUI*)lv_event_get_user_data(e);
-  self->workoutRunning = false;
-  if (self->workoutClockTimer) { lv_timer_del(self->workoutClockTimer); self->workoutClockTimer = nullptr; }
-  // Back to the pet screen (workout is entered from there by swipe-up).
-  lv_scr_load_anim(self->petScreen, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 200, 0, false);
-  self->refreshPetScreen();
-}
-
-void PetUI::workoutClockCB(lv_timer_t* t) {
-  PetUI* self = (PetUI*)t->user_data;
-  if (!self->workoutRunning) return;
-  uint32_t totalMs = self->workoutElapsedMs + (lv_tick_get() - self->workoutStartMs);
-  uint32_t secs    = totalMs / 1000;
-  lv_label_set_text_fmt(self->timerLabel, "%02d:%02d", secs / 60, secs % 60);
-}
-
-void PetUI::workoutDiffBtnCB(lv_event_t* e) {
-  PetUI* self = (PetUI*)lv_event_get_user_data(e);
-  if (self->workoutRunning) return;  // don't change difficulty mid-workout
-  int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
-  self->workoutDifficulty = (WorkoutDifficulty)idx;
-  applyDiffStyles(self->diffBtns, idx);
-  // Reset done label to show new target
-  int target = WORKOUT_TARGETS[idx];
-  lv_label_set_text_fmt(self->workoutDoneLabel, LV_SYMBOL_OK "  DONE (need %d)", target);
 }
 
 /* ---- pomodoro screen --------------------------------------------- */

@@ -73,6 +73,10 @@ static SensorQMI8658 qmi;
 static bool      imuOk      = false;
 static uint8_t   imuAddr    = 0;   // I2C address begin() succeeded at
 static StepState stepState;        // today's steps, NVS-backed (storage.h)
+
+// Device settings (swipe-up screen), NVS-backed. Loaded in setup(); the UI
+// fires settingsChangedCB (below, near pocket mode) on every user change.
+static DeviceSettings devCfg = { 100, 0, 200, 0, 2 };
 static uint32_t  pedLastRaw = 0;   // last raw step-counter reading
 
 // Software step detector. The QMI8658's silicon pedometer never produced a
@@ -96,6 +100,7 @@ extern PetUI ui;  // defined below with the other globals; the swing detector ne
 static const int  CAP_MAX = 16384;      // ~4 min at the sampler's ~66 Hz
 static uint16_t*  capBuf  = nullptr;    // ps_malloc'd on first session
 static int        capLen  = 0;
+static bool       quakeCapReady = false;  // set by the quake detector at event end
 
 static void swStepSample() {
   uint32_t nowMs = millis();
@@ -262,6 +267,85 @@ static void swStepSample() {
     pullBurstMax = 0;
     pullLastRepMs = 0;
   }
+
+  // Quake watch: classic STA/LTA seismic trigger on d = ||a|-1g|. The short
+  // average (~0.5 s) must exceed a multiple of the long average (~30 s
+  // baseline, frozen while excited so an event can't eat its own reference)
+  // continuously for 1.2 s — bumps and door slams die out in milliseconds
+  // and never qualify; real shaking sustains. Honest scope: a MEMS accel on
+  // a table detects quakes you can already feel (roughly MMI IV+ locally),
+  // not weak distant ones — this is a watchdog, not early warning. Events
+  // are recorded (3 s pre-trigger ring + the event itself) and shipped to
+  // the Motion Lab like workout captures.
+  static const uint32_t QK_SUSTAIN_MS   = 1200;
+  static const uint32_t QK_CALM_MS      = 3000;
+  static const int      QK_PRE          = 200;    // ~3 s pre-trigger context
+  static float    qkSta = 0, qkLta = 0.003f;
+  static uint32_t qkHighSince = 0, qkCalmSince = 0;
+  static bool     qkEvent = false;
+  static float    qkPeak = 0;
+  static uint16_t qkPre[QK_PRE];
+  static int      qkPreIdx = 0, qkPreCnt = 0;
+  static int      qkThrottle = 0;
+  if (ui.isQuakeArmed()) {
+    float d = fabsf(mag - 1.0f);
+    qkSta += 0.03f  * (d - qkSta);                    // ~0.5 s EMA at 66 Hz
+    float trig = 4.0f * qkLta + 0.006f;
+    if (!qkEvent && qkSta < trig)
+      qkLta += 0.0005f * (d - qkLta);                 // ~30 s EMA, gated
+    if (qkLta < 0.0015f) qkLta = 0.0015f;             // sensor noise floor
+
+    uint16_t mg = (uint16_t)(d * 1000.0f > 65535.0f ? 65535 : d * 1000.0f);
+    qkPre[qkPreIdx] = mg;
+    qkPreIdx = (qkPreIdx + 1) % QK_PRE;
+    if (qkPreCnt < QK_PRE) qkPreCnt++;
+
+    if (++qkThrottle >= 3) {                          // ~22 Hz to the chart
+      qkThrottle = 0;
+      ui.pushQuakeSample((int)((mag - 1.0f) * 1000.0f));
+    }
+
+    if (!qkEvent) {
+      if (qkSta > trig) {
+        if (qkHighSince == 0) qkHighSince = nowMs;
+        if (nowMs - qkHighSince >= QK_SUSTAIN_MS) {
+          qkEvent = true;
+          qkPeak = 0;
+          qkCalmSince = 0;
+          // start the event recording with the pre-trigger ring
+          if (!capBuf) capBuf = (uint16_t*)ps_malloc(CAP_MAX * sizeof(uint16_t));
+          capLen = 0;
+          if (capBuf)
+            for (int i = 0; i < qkPreCnt; i++)
+              capBuf[capLen++] = qkPre[(qkPreIdx + i + QK_PRE - qkPreCnt) % QK_PRE];
+          ui.quakeTriggered();
+          Serial.println("quake: TRIGGERED");
+        }
+      } else {
+        qkHighSince = 0;
+      }
+    } else {
+      if (d > qkPeak) qkPeak = d;
+      if (capBuf && capLen < CAP_MAX) capBuf[capLen++] = mg;
+      if (qkSta < 2.0f * qkLta + 0.003f) {
+        if (qkCalmSince == 0) qkCalmSince = nowMs;
+        if (nowMs - qkCalmSince >= QK_CALM_MS) {
+          qkEvent = false;
+          qkHighSince = 0;
+          ui.quakeCalm((int)(qkPeak * 1000.0f));
+          quakeCapReady = true;   // loop ships the recording
+          Serial.printf("quake: calm, peak %d mg, %d samples\n",
+                        (int)(qkPeak * 1000.0f), capLen);
+        }
+      } else {
+        qkCalmSince = 0;
+      }
+    }
+  } else {
+    qkSta = 0; qkLta = 0.003f;
+    qkHighSince = 0; qkCalmSince = 0;
+    qkEvent = false; qkPreCnt = 0; qkPreIdx = 0;
+  }
 }
 
 // Direct register read, bypassing SensorLib — ground truth for debugging
@@ -384,24 +468,43 @@ static void playTone(float freqHz, int ms, float vol) {
   i2s.write((uint8_t*)buf, (size_t)frames * 2 * sizeof(int16_t));
 }
 
-// Registered with the UI layer (see PetSoundEvent in ui.h).
+// Registered with the UI layer (see PetSoundEvent in ui.h). Master volume
+// and sound theme come from the settings screen; the quake siren
+// deliberately ignores volume — an alarm you can accidentally mute isn't
+// an alarm. Themes: 0 classic (original chirps), 1 arcade (fast bright
+// arpeggios), 2 soft (lower, gentler, quieter).
 static void petSoundCB(int event) {
   if (!audioOk) return;
+  if (event == SOUND_QUAKE) {     // loud two-tone siren, three cycles
+    for (int i = 0; i < 3; i++) {
+      playTone(1318.5f, 120, 0.9f);
+      playTone(659.3f, 120, 0.9f);
+    }
+    return;
+  }
+  float v = devCfg.volumePct / 100.0f;
+  if (v <= 0.0f) return;
+  int t = devCfg.soundTheme;
   switch (event) {
-    case SOUND_HABIT_DONE:    // cheerful up-chirp (A5 -> E6)
-      playTone(880.0f, 70, 0.5f);
-      playTone(1318.5f, 120, 0.5f);
+    case SOUND_HABIT_DONE:
+      if      (t == 1) { playTone(1318.5f, 50, 0.5f * v); playTone(1568.0f, 50, 0.5f * v); playTone(2093.0f, 90, 0.5f * v); }
+      else if (t == 2) { playTone(523.3f, 90, 0.35f * v); playTone(659.3f, 140, 0.35f * v); }
+      else             { playTone(880.0f, 70, 0.5f * v);  playTone(1318.5f, 120, 0.5f * v); }
       break;
-    case SOUND_HABIT_UNDONE:  // single low blip
-      playTone(523.3f, 90, 0.35f);
+    case SOUND_HABIT_UNDONE:
+      if      (t == 1) { playTone(392.0f, 60, 0.35f * v); playTone(261.6f, 80, 0.35f * v); }
+      else if (t == 2) { playTone(330.0f, 110, 0.25f * v); }
+      else             { playTone(523.3f, 90, 0.35f * v); }
       break;
-    case SOUND_TROPHY:        // three-note rising fanfare (E5-A5-E6)
-      playTone(659.3f, 80, 0.5f);
-      playTone(880.0f, 80, 0.5f);
-      playTone(1318.5f, 150, 0.5f);
+    case SOUND_TROPHY:
+      if      (t == 1) { playTone(523.3f, 60, 0.5f * v); playTone(659.3f, 60, 0.5f * v); playTone(784.0f, 60, 0.5f * v); playTone(1046.5f, 140, 0.5f * v); }
+      else if (t == 2) { playTone(523.3f, 100, 0.35f * v); playTone(659.3f, 100, 0.35f * v); playTone(784.0f, 180, 0.35f * v); }
+      else             { playTone(659.3f, 80, 0.5f * v); playTone(880.0f, 80, 0.5f * v); playTone(1318.5f, 150, 0.5f * v); }
       break;
-    case SOUND_REP_BLIP:      // quiet C6 blip, 10% volume (rep counted)
-      playTone(1046.5f, 60, 0.1f);
+    case SOUND_REP_BLIP:          // stays a whisper: 10% of master
+      if      (t == 1) playTone(1568.0f, 45, 0.1f * v);
+      else if (t == 2) playTone(784.0f, 70, 0.1f * v);
+      else             playTone(1046.5f, 60, 0.1f * v);
       break;
   }
 }
@@ -536,6 +639,14 @@ static void pocketModeCB() {
   Serial.println("pocket mode ON (BOOT to wake)");
 }
 
+// Settings screen: persist + apply the hardware-facing knobs. Brightness
+// lands live (slider preview); volume/theme/sleep are read at use time.
+static void settingsChangedCB(const DeviceSettings& s) {
+  devCfg = s;
+  storage.saveDeviceSettings(s);
+  if (!pocketMode) gfx->setBrightness(devCfg.brightness);
+}
+
 static void touchReadCB(lv_indev_drv_t* indev, lv_indev_data_t* data) {
   // The CST92xx pulses TP_INT on every scan while touched, including a final
   // report with zero points on release — same read pattern as Waveshare's demo.
@@ -570,8 +681,8 @@ static void touchReadCB(lv_indev_drv_t* indev, lv_indev_data_t* data) {
 // TCA9554 expander, which can't wake the chip). Wake-on-motion runs the accel
 // alone at a low-power ODR (tens of µA) — cheaper than keeping the touch
 // controller scanning for tap-to-wake, which is why pickup is the gesture.
-static const uint32_t AUTOSLEEP_MS     = 2UL * 60UL * 1000UL;
-static const uint32_t AUTOSLEEP_DIM_MS = 90UL * 1000UL;        // warning dim
+// Timeout now lives in devCfg.sleepMin (settings screen); the warning dim
+// fires at 3/4 of it.
 static const uint8_t  WOM_THRESHOLD_MG = 120;  // pick-up strength, not desk bumps
 
 static bool wokeFromSleep = false;  // set at boot, picks the splash wording
@@ -836,6 +947,10 @@ void setup() {
   ui.setSoundCallback(petSoundCB);
   ui.setSleepCallback(sleepLogCB);
   ui.setPocketModeCallback(pocketModeCB);
+  ui.setSettingsCallback(settingsChangedCB);
+  devCfg = storage.loadDeviceSettings();
+  ui.setDeviceSettings(devCfg);           // also re-applies the pet background
+  gfx->setBrightness(devCfg.brightness);  // splash used the 200 default until now
   ui.setBackDoneCallback(backDoneCB);
   backSessions = storage.loadBackSessions();
   wifiSync.setBackSessions(backSessions);
@@ -1173,6 +1288,35 @@ void loop() {
     }
   }
 
+  // ── Hunger decay, wall-clock driven ───────────────────────────────────────
+  // hungerHourlyTick() fires per elapsed RTC hour, with the last applied hour
+  // kept in NVS — so a night of deep sleep or a day powered off is charged in
+  // one catch-up burst at the next boot. (Before July 2026 nothing on this
+  // board called the tick; the blob was permanently full and nobody had to
+  // work out. Catch-up is capped at 48 h so a long shelf stay leaves the pet
+  // starving-but-rescuable rather than instantly dead.)
+  {
+    static uint32_t lastHungerCheck = 0;
+    if (millis() - lastHungerCheck > 60000 && timeKeeper.hasSync() && pet.isAlive()) {
+      lastHungerCheck = millis();
+      WallDate t = timeKeeper.now();
+      uint32_t hourIndex = ((uint32_t)t.year * 366UL + (uint32_t)t.dayOfYear) * 24UL + t.hour;
+      uint32_t last = storage.loadHungerClock();
+      if (last == 0 || last > hourIndex) {
+        storage.saveHungerClock(hourIndex);  // first run (or clock went backwards)
+      } else if (hourIndex > last) {
+        uint32_t elapsed = hourIndex - last;
+        if (elapsed > 48) elapsed = 48;
+        for (uint32_t i = 0; i < elapsed; i++) pet.hungerHourlyTick();
+        storage.saveHungerClock(hourIndex);
+        storage.savePet(pet.getState());
+        ui.refreshPetScreen();
+        Serial.printf("hunger: -%lu h of decay applied, now %d\n",
+                      (unsigned long)elapsed, pet.getHunger());
+      }
+    }
+  }
+
   // ── Sleep app: keep the once-per-day gate honest ──────────────────────────
   // Re-arms the question on a new calendar day, and closes the gate if the
   // clock only became valid after boot (the setup() restore couldn't tell).
@@ -1198,6 +1342,17 @@ void loop() {
     static uint32_t    capLastTry    = 0;
     static const char* capLabel      = "pullup";
     bool running = ui.isPullupRunning() || ui.isBackRunning();
+    if (quakeCapReady) {
+      // Quake events reuse the same shipping path with their own label.
+      quakeCapReady = false;
+      if (capLen > 0) {
+        capLabel = "quake";
+        capPending = true;
+        capPendingSince = millis();
+        capLastTry = 0;
+        Serial.printf("motionlog: quake event, %d samples queued\n", capLen);
+      }
+    }
     if (running && !wasCapRunning) {
       if (!capBuf) capBuf = (uint16_t*)ps_malloc(CAP_MAX * sizeof(uint16_t));
       capLen = 0;
@@ -1232,17 +1387,22 @@ void loop() {
     if (millis() - lastIdleCheck > 1000) {
       lastIdleCheck = millis();
       uint32_t idle = lv_disp_get_inactive_time(NULL);
+      uint32_t sleepMs = (uint32_t)devCfg.sleepMin * 60000UL;
+      uint32_t dimMs   = sleepMs * 3 / 4;
       bool inhibited = pocketMode || ui.isFocusRunning() || ui.isBackRunning() ||
-                       ui.isPullupRunning() || capPending ||
+                       ui.isPullupRunning() || ui.isQuakeArmed() || capPending ||
                        (pmuOk && power.isVbusIn()) ||
-                       (swLastStepMs != 0 && millis() - swLastStepMs < AUTOSLEEP_MS);
-      if (inhibited || idle < AUTOSLEEP_DIM_MS) {
-        if (dimmed && !pocketMode) { dimmed = false; gfx->setBrightness(200); }
-      } else if (idle >= AUTOSLEEP_MS) {
+                       (swLastStepMs != 0 && millis() - swLastStepMs < sleepMs);
+      if (inhibited || idle < dimMs) {
+        if (dimmed && !pocketMode) { dimmed = false; gfx->setBrightness(devCfg.brightness); }
+      } else if (idle >= sleepMs) {
         enterAutoSleep();  // never returns
       } else if (!dimmed) {
         dimmed = true;
-        gfx->setBrightness(60);  // one-minute warning; any touch restores
+        // warning dim; any touch restores. Scales with the user's brightness
+        // so a dim-preferring user still sees a visible step down.
+        uint8_t dim = devCfg.brightness / 4;
+        gfx->setBrightness(dim < 15 ? 15 : dim);
       }
     }
   }
@@ -1274,7 +1434,7 @@ void loop() {
         if (pocketMode) {
           // Wake from pocket mode straight back into the walk screen.
           pocketMode = false;
-          gfx->setBrightness(200);
+          gfx->setBrightness(devCfg.brightness);
           ui.showWalkScreen();
           Serial.println("pocket mode OFF");
         } else {
