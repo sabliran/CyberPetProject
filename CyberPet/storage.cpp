@@ -14,6 +14,12 @@ PetState Storage::loadPet() {
   size_t len = prefs.getBytesLength("pet_state");
   if (len == sizeof(PetState)) {
     prefs.getBytes("pet_state", &state, sizeof(PetState));
+  } else if (len == sizeof(PetState) - sizeof(int)) {
+    // Pre-health save (July 2026): `health` was appended as the last field,
+    // so the old bytes map onto the struct front unchanged. Migrate instead
+    // of discarding — a size-mismatch fallthrough would wipe XP and streaks.
+    prefs.getBytes("pet_state", &state, len);
+    state.health = 100;
   } else {
     // no saved state yet (or struct size changed) — use defaults
     state.xp = 0;
@@ -25,6 +31,7 @@ PetState Storage::loadPet() {
     state.fedToday      = false;
     state.alive         = true;
     state.dashXpApplied = 0;
+    state.health        = 100;
   }
   return state;
 }
@@ -76,6 +83,11 @@ PetSettings Storage::loadSettings() {
   size_t len = prefs.getBytesLength("pet_settings");
   if (len == sizeof(PetSettings)) {
     prefs.getBytes("pet_settings", &s, sizeof(PetSettings));
+  } else if (len == sizeof(PetSettings) - sizeof(int)) {
+    // Pre-difficulty save (July 2026): the field was appended last, so the
+    // old bytes fill the struct front; difficulty keeps its default (normal).
+    prefs.getBytes("pet_settings", &s, len);
+    s.difficulty = 1;
   }
   return s;
 }

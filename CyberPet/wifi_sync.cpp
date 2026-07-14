@@ -106,6 +106,7 @@ void WifiSync::buildSyncRequest(Pet* pet, HabitTracker* tracker, String& out) {
   petObj["mood"]     = p.mood;
   petObj["daysAlive"]= p.daysAlive;
   petObj["hunger"]   = p.hunger;
+  petObj["health"]   = p.health;
   petObj["alive"]    = p.alive;
 
   // Walking analytics: the server keys history by the device's own calendar
@@ -320,9 +321,11 @@ bool WifiSync::applySyncResponse(const String& response, Pet* pet, HabitTracker*
     int gain  = respDoc["settings"]["moodGainPerHabit"] | -1;
     int decay = respDoc["settings"]["moodDecayPerMiss"]  | -1;
     int rHour = respDoc["settings"]["dailyResetHour"]    | -1;
+    int dif   = respDoc["settings"]["difficulty"]        | -1;
     if (gain  >= 0) incoming.moodGainPerHabit = gain;
     if (decay >= 0) incoming.moodDecayPerMiss = decay;
     if (rHour >= 0) incoming.dailyResetHour   = rHour;
+    if (dif   >= 0) incoming.difficulty       = dif;
     pet->applySettings(incoming);
   }
 

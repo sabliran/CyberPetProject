@@ -394,6 +394,10 @@ private:
   lv_obj_t*  hungerLabel;
   lv_obj_t*  hungerBar;
   lv_obj_t*  moodLabel;
+  lv_obj_t*  healthLabel;
+  lv_obj_t*  healthBar;
+  void positionHealthBar();                     // pin the HP bar above the sprite
+  static void healthFollowCB(lv_timer_t* t);    // ~12 Hz follower while pet screen shown
 
   // pomodoro screen widgets + state
   lv_obj_t*  pomodoroScreen;

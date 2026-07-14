@@ -46,6 +46,7 @@
               <div><dt>XP</dt><dd id="petXP">—</dd></div>
               <div><dt>Mood</dt><dd id="petMood">—</dd></div>
               <div><dt>Hunger</dt><dd id="petHunger">—</dd></div>
+              <div><dt>Health</dt><dd id="petHealth">—</dd></div>
               <div><dt>Days alive</dt><dd id="petDays">—</dd></div>
             </dl>
           </div>
@@ -178,6 +179,17 @@
       <section class="panel panel--settings">
         <h2 class="panel__title">Settings</h2>
         <form class="settingsform" id="settingsForm">
+          <label>Difficulty
+            <select id="setDifficulty">
+              <option value="0">Easy — slow drains, big meals</option>
+              <option value="1">Normal</option>
+              <option value="2">Hard — fast drains, small meals</option>
+            </select>
+          </label>
+          <p class="settingshint">Scales how much work Koko demands: hunger drain per hour
+            (2/3/4), workout meal size (35/20/12), and health damage per missed habit
+            (5/10/15, daily cap 15/30/45; perfect-day heal 20/15/10). Picking one also
+            suggests mood values below — tweak them before saving if you like.</p>
           <label>Pet name
             <input type="text" id="setPetName" maxlength="16">
           </label>

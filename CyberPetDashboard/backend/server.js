@@ -397,7 +397,7 @@ app.get('/api/settings', (req, res) => {
 
 app.post('/api/settings', (req, res) => {
   const ALLOWED = ['petName', 'dailyResetHour', 'moodDecayPerMiss',
-                   'moodGainPerHabit', 'syncIntervalSeconds'];
+                   'moodGainPerHabit', 'syncIntervalSeconds', 'difficulty'];
   const clean = {};
   for (const key of ALLOWED) {
     const v = req.body[key];

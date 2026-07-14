@@ -67,6 +67,14 @@ bool HabitTracker::anyDoneToday() const {
   return false;
 }
 
+int HabitTracker::missedToday() const {
+  int missed = 0;
+  for (int i = 0; i < MAX_HABITS; i++) {
+    if (habits[i].active && !habits[i].doneToday) missed++;
+  }
+  return missed;
+}
+
 void HabitTracker::resetDaily() {
   for (int i = 0; i < MAX_HABITS; i++) {
     if (habits[i].active) {

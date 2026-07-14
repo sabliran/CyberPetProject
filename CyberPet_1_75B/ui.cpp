@@ -295,6 +295,29 @@ void PetUI::buildPetScreen() {
   lv_obj_set_style_text_align(moodLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_color(moodLabel, lv_color_hex(0x3EE8A0), 0);
 
+  // --- floating HP bar (game-style, hovers over the sprite and follows it):
+  //     missed habits chip it at the daily reset; 0 = Koko dies. Created
+  //     after blobShape so it draws on top; a small timer re-pins it above
+  //     the sprite as the roam/hop/squash animations move him around ---
+  healthLabel = lv_label_create(petScreen);
+  lv_obj_set_width(healthLabel, 90);
+  lv_obj_set_style_text_align(healthLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(healthLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(healthLabel, lv_color_hex(0x3EE8A0), 0);
+  lv_label_set_text(healthLabel, "HP 100");
+
+  healthBar = lv_bar_create(petScreen);
+  lv_obj_set_size(healthBar, 60, 6);
+  lv_bar_set_range(healthBar, 0, 100);
+  lv_obj_set_style_bg_color(healthBar, lv_color_hex(0x0E0E1C), 0);
+  lv_obj_set_style_bg_opa(healthBar, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(healthBar, lv_color_hex(0x3EE8A0), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_opa(healthBar, LV_OPA_COVER, LV_PART_INDICATOR);
+  lv_obj_set_style_radius(healthBar, 5, 0);
+  lv_obj_set_style_radius(healthBar, 5, LV_PART_INDICATOR);
+  positionHealthBar();
+  lv_timer_create(healthFollowCB, 80, this);
+
   lv_obj_add_event_cb(petScreen, petGestureCB, LV_EVENT_GESTURE, this);
   lv_obj_add_flag(petScreen, LV_OBJ_FLAG_CLICKABLE);
   // Press & hold anywhere on the pet screen = manual sync.
@@ -788,6 +811,16 @@ void PetUI::refreshPetScreen() {
     }
     lv_obj_set_pos(moodLabel, 246, 46);
   }
+
+  // Health strip (top center) — same traffic-light thresholds as hunger.
+  {
+    int hp = pet->getHealth();
+    uint32_t col = hp >= 70 ? 0x3EE8A0 : hp >= 40 ? 0xD4A030 : 0xFF4040;
+    lv_bar_set_value(healthBar, hp, LV_ANIM_ON);
+    lv_label_set_text_fmt(healthLabel, "HP %d", hp);
+    lv_obj_set_style_text_color(healthLabel, lv_color_hex(col), 0);
+    lv_obj_set_style_bg_color(healthBar, lv_color_hex(col), LV_PART_INDICATOR);
+  }
 }
 
 /* ---- animations -------------------------------------------------- */
@@ -807,6 +840,30 @@ void PetUI::startBlobAnimations() {
   int mood0 = pet->getMood();
   uint32_t initPeriod = (uint32_t)(ROAM_PERIOD_MS[stage] * (25 + (100 - mood0)) / 25);
   roamTimer = lv_timer_create(roamTimerCB, initPeriod, this);
+}
+
+// Game-style floating HP bar: centered above the sprite's *drawn* top edge.
+// g_depthZoom scales the rendered image around the widget center, so the
+// visual top is centerY - drawn/2; the bar width tracks apparent size so it
+// shrinks when Koko walks "away". Squash/stretch wobbles it a little — fine,
+// it reads as alive. Called from a small timer (~12 Hz), cheap enough that
+// gating beyond the active-screen check isn't worth it.
+void PetUI::positionHealthBar() {
+  if (lv_scr_act() != petScreen) return;
+  int w  = lv_obj_get_width(blobShape);
+  int h  = lv_obj_get_height(blobShape);
+  int cx = lv_obj_get_x(blobShape) + w / 2;
+  int cy = lv_obj_get_y(blobShape) + h / 2;
+  int drawn = h * g_depthZoom / 256;
+  int barW  = (w * g_depthZoom / 256) * 3 / 4;
+  if (barW < 36) barW = 36;
+  lv_obj_set_size(healthBar, barW, 6);
+  lv_obj_set_pos(healthBar, cx - barW / 2, cy - drawn / 2 - 14);
+  lv_obj_set_pos(healthLabel, cx - 45, cy - drawn / 2 - 32);
+}
+
+void PetUI::healthFollowCB(lv_timer_t* t) {
+  ((PetUI*)t->user_data)->positionHealthBar();
 }
 
 void PetUI::roamToRandom() {
@@ -1627,7 +1684,7 @@ void PetUI::pushBtnCB(lv_event_t* e) {
 
   self->pushRunning = false;
   if (self->pushReps >= PUSH_TARGET_REPS) {
-    self->pet->feed(20, 10);
+    self->pet->feedWorkout();  // meal size scales with dashboard difficulty
     self->pet->addXP(PUSH_XP);
     self->refreshPetScreen();
     lv_label_set_text_fmt(self->pushHintLabel, "fed Koko  +%d xp", PUSH_XP);
@@ -1734,7 +1791,7 @@ void PetUI::backBtnCB(lv_event_t* e) {
 
   self->backRunning = false;
   if (self->backReps >= BACK_TARGET_REPS) {
-    self->pet->feed(20, 10);
+    self->pet->feedWorkout();  // meal size scales with dashboard difficulty
     self->pet->addXP(BACK_XP);
     self->refreshPetScreen();
     lv_label_set_text_fmt(self->backHintLabel, "fed Koko  +%d xp", BACK_XP);
@@ -1842,7 +1899,7 @@ void PetUI::pullupBtnCB(lv_event_t* e) {
 
   self->pullupRunning = false;
   if (self->pullupReps >= PULLUP_TARGET_REPS) {
-    self->pet->feed(20, 10);
+    self->pet->feedWorkout();  // meal size scales with dashboard difficulty
     self->pet->addXP(PULLUP_XP);
     self->refreshPetScreen();
     lv_label_set_text_fmt(self->pullupHintLabel, "fed Koko  +%d xp", PULLUP_XP);

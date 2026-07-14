@@ -26,11 +26,13 @@ Pet::Pet() {
   state.fedToday     = false;
   state.alive        = true;
   state.dashXpApplied = 0;
+  state.health       = 100;
   settings = DEFAULT_PET_SETTINGS;
 }
 
 void Pet::init(const PetState& loaded) {
   state = loaded;
+  state.health = max(0, min(100, state.health));  // guard a corrupt save
   checkEvolution(); // ensure stage is consistent with loaded XP
 }
 
@@ -85,10 +87,14 @@ void Pet::logSleep(int quality) {
 
 void Pet::hungerHourlyTick() {
   if (!state.alive) return;
-  state.hunger = max(0, state.hunger - HUNGER_DECAY_PER_HOUR);
+  state.hunger = max(0, state.hunger - DIFF_HUNGER_DECAY[diff()]);
 }
 
-void Pet::dailyTick(bool anyHabitDoneToday) {
+void Pet::feedWorkout() {
+  feed(DIFF_MEAL_HUNGER[diff()], DIFF_MEAL_MOOD[diff()]);
+}
+
+void Pet::dailyTick(bool anyHabitDoneToday, int missedHabits) {
   state.daysAlive++;
 
   // Hunger now decays continuously via hungerHourlyTick(); the daily tick
@@ -97,6 +103,18 @@ void Pet::dailyTick(bool anyHabitDoneToday) {
     state.alive = false;
   }
   state.fedToday = false;  // reset for the new day
+
+  // Health: every missed habit hurts (capped so a long list isn't lethal in
+  // one day); a perfect day — nothing missed, something done — heals.
+  if (state.alive) {
+    if (missedHabits > 0) {
+      int dmg = min(missedHabits * DIFF_HP_DMG[diff()], DIFF_HP_DMG_CAP[diff()]);
+      state.health = max(0, state.health - dmg);
+      if (state.health == 0) state.alive = false;
+    } else if (anyHabitDoneToday) {
+      state.health = min(100, state.health + DIFF_HP_HEAL[diff()]);
+    }
+  }
 
   if (!state.alive) {
     state.mood = 0;
@@ -167,7 +185,12 @@ void Pet::setMood(int mood) {
 
 void Pet::setHunger(int hunger) {
   state.hunger = max(0, min(100, hunger));
-  if (state.hunger > 0) state.alive = true;
+  if (state.hunger > 0) {
+    state.alive = true;
+    // A revive with 0 health would just re-die at the next daily tick —
+    // give the resurrected pet a fighting floor instead.
+    if (state.health <= 0) state.health = 20;
+  }
 }
 
 void Pet::applySettings(const PetSettings& s) {
@@ -179,6 +202,8 @@ void Pet::applySettings(const PetSettings& s) {
     settings.moodDecayPerMiss = s.moodDecayPerMiss;
   if (s.dailyResetHour >= 0 && s.dailyResetHour <= 23)
     settings.dailyResetHour = s.dailyResetHour;
+  if (s.difficulty >= 0 && s.difficulty <= 2)
+    settings.difficulty = s.difficulty;
 }
 
 PetSettings Pet::getSettings() const { return settings; }

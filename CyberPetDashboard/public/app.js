@@ -85,6 +85,18 @@ async function loadPet() {
     hungerEl.style.color = '#FF4040';
   }
 
+  // Health: chipped by missed habits at the device's daily reset (10 per
+  // missed habit, capped 30/day; perfect days heal 15). 0 = dead.
+  const health = pet.health ?? 100;
+  const healthEl = document.getElementById('petHealth');
+  if (!alive) {
+    healthEl.textContent = '0%';
+    healthEl.style.color = '#FF4040';
+  } else {
+    healthEl.textContent = `${health}%`;
+    healthEl.style.color = health >= 70 ? '#3EE8A0' : health >= 40 ? '#D4A030' : '#FF4040';
+  }
+
   const blob  = document.getElementById('petBlob');
   const color = STAGE_COLORS[stage] ?? '#6FD08C';
   blob.style.background = `radial-gradient(circle at 32% 28%, rgba(255,255,255,0.35), transparent 55%), ${color}`;
@@ -325,6 +337,7 @@ document.getElementById('questForm').addEventListener('submit', async (e) => {
 
 async function loadSettings() {
   const s = await api('/settings');
+  document.getElementById('setDifficulty').value   = s.difficulty ?? 1;
   document.getElementById('setPetName').value      = s.petName ?? '';
   document.getElementById('setResetHour').value    = s.dailyResetHour ?? 0;
   document.getElementById('setMoodGain').value     = s.moodGainPerHabit ?? 8;
@@ -333,9 +346,20 @@ async function loadSettings() {
   document.getElementById('deviceId').textContent  = s.deviceId ?? 'not yet synced';
 }
 
+// Picking a difficulty suggests matching mood values (still editable before
+// saving). The hunger/meal/health numbers live on the device (pet.h DIFF_*).
+const DIFF_MOOD_PRESETS = { 0: { gain: 4, loss: 10 }, 1: { gain: 2, loss: 15 }, 2: { gain: 2, loss: 20 } };
+document.getElementById('setDifficulty').addEventListener('change', (e) => {
+  const p = DIFF_MOOD_PRESETS[e.target.value];
+  if (!p) return;
+  document.getElementById('setMoodGain').value = p.gain;
+  document.getElementById('setMoodLoss').value = p.loss;
+});
+
 document.getElementById('settingsForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const payload = {
+    difficulty:          parseInt(document.getElementById('setDifficulty').value, 10),
     petName:             document.getElementById('setPetName').value.trim(),
     dailyResetHour:      parseInt(document.getElementById('setResetHour').value, 10),
     moodGainPerHabit:    parseInt(document.getElementById('setMoodGain').value, 10),

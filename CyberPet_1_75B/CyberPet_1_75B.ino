@@ -1118,7 +1118,8 @@ static void applySyncResults() {
 
 static void fireDailyReset() {
   bool didAnything = habits.anyDoneToday();
-  pet.dailyTick(didAnything);
+  int  missed      = habits.missedToday();  // before resetDaily clears flags
+  pet.dailyTick(didAnything, missed);
   habits.resetDaily();
   storage.savePet(pet.getState());
   storage.saveHabits(habits);

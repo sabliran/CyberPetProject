@@ -10,11 +10,27 @@ struct PetSettings {
   int moodGainPerHabit;  // mood boost when any habit is done    (daily tick)
   int moodDecayPerMiss;  // mood loss  when no habit is done     (daily tick)
   int dailyResetHour;    // local hour at which habits roll over (0-23)
+  int difficulty;        // 0 easy, 1 normal, 2 hard — indexes the DIFF_*
+                         // tables below. MUST stay the last field:
+                         // Storage::loadSettings migrates pre-difficulty
+                         // saves by size (same trick as PetState.health).
 };
 
 // These match the server's DEFAULT_DATA.settings and pet.cpp's old literals.
 // dailyResetHour also mirrors DEFAULT_DAILY_RESET_HOUR in timekeeping.h (both = 4).
-static const PetSettings DEFAULT_PET_SETTINGS = { 2, 15, 4 };
+static const PetSettings DEFAULT_PET_SETTINGS = { 2, 15, 4, 1 };
+
+// Difficulty economy (dashboard-set, index = PetSettings.difficulty): how
+// much real work Koko demands before hunger/health drains win. Normal is
+// the pre-difficulty tuning; easy roughly halves the pressure, hard needs
+// ~4-5 workout sessions a day and punishes missed habits half again harder.
+//                                          easy  normal  hard
+static const int DIFF_HUNGER_DECAY[3]   = {  2,     3,     4  };  // per hour
+static const int DIFF_MEAL_HUNGER[3]    = { 35,    20,    12  };  // per workout
+static const int DIFF_MEAL_MOOD[3]      = { 12,    10,     8  };
+static const int DIFF_HP_DMG[3]         = {  5,    10,    15  };  // per missed habit
+static const int DIFF_HP_DMG_CAP[3]     = { 15,    30,    45  };  // per day
+static const int DIFF_HP_HEAL[3]        = { 20,    15,    10  };  // perfect day
 
 // Evolution stages — blob visually grows and gains glow as it evolves
 enum PetStage {
@@ -36,11 +52,15 @@ enum PetStage {
 
 // Continuous hunger decay: applied per wall-clock hour by loop() / the sim,
 // with NVS catch-up across sleep and power-off (storage.saveHungerClock).
-// 3/hour ≈ 72/day: an unattended day visibly starves the blob, an overnight
-// costs ~30, so mornings start hungry enough that a workout is truly needed.
-// (Raised from 2 in July 2026 — and until then the 1.75B never called the
-// tick at all, so hunger sat pinned at 100.)
-static const int HUNGER_DECAY_PER_HOUR = 3;
+// Rate comes from DIFF_HUNGER_DECAY[difficulty]; on normal, 3/hour ≈ 72/day:
+// an unattended day visibly starves the blob, an overnight costs ~30, so
+// mornings start hungry enough that a workout is truly needed.
+
+// Health: missed habits literally hurt. At the daily reset every active habit
+// left undone deals DIFF_HP_DMG damage (capped at DIFF_HP_DMG_CAP so a long
+// habit list isn't instantly lethal); a perfect day — something done and
+// nothing missed — heals DIFF_HP_HEAL. Health 0 = death, same finality as
+// starvation. On normal, full health to dead is 4 all-missed days.
 
 // Mood below this threshold demotes the displayed stage by one (recoverable —
 // XP is never touched; raise mood above this and the stage returns immediately).
@@ -69,6 +89,10 @@ struct PetState {
   bool fedToday;     // reset to false each daily tick
   bool alive;        // false = pet died from starvation
   int dashXpApplied; // lifetime dashboard XP already credited; delta vs server total is idempotent
+  int health;        // 0-100; missed habits chip it at the daily reset, 0 = dead.
+                     // MUST stay the last field: Storage::loadPet migrates
+                     // pre-health saves by reading the old bytes into the
+                     // struct front and defaulting this to 100.
 };
 
 class Pet {
@@ -81,13 +105,17 @@ public:
   void addXP(int amount);
   void removeXP(int amount);  // exact inverse of addXP (habit un-done): xp and the +8 mood boost
   void resetProgress();       // dashboard-commanded: xp/stage/dashXpApplied to zero; mood/hunger/streaks untouched
-  void dailyTick(bool anyHabitDoneToday);
+  // missedHabits: active habits left undone today (habits.missedToday(),
+  // counted BEFORE resetDaily clears the flags) — each deals health damage.
+  void dailyTick(bool anyHabitDoneToday, int missedHabits = 0);
   // Sleep app: 0 good, 1 medium, 2 bad. Good/medium lift mood + hunger;
   // bad costs XP, mood and hunger (see pet.cpp for the exact numbers).
   void logSleep(int quality);
   // Call when an exercise target is met. Restores `hungerAmount` (capped at
-  // 100) and boosts mood by `moodBoost` (back/pull-up apps pass 45, 12).
+  // 100) and boosts mood by `moodBoost`.
   void feed(int hungerAmount = 55, int moodBoost = 15);
+  // The workout apps' meal — sized by the current difficulty (DIFF_MEAL_*).
+  void feedWorkout();
   // Continuous hunger decay — call once per real hour (loop()/sim timer).
   // Death still only happens at dailyTick (a full unfed day at 0 hunger).
   void hungerHourlyTick();
@@ -96,6 +124,7 @@ public:
   int getXP()      const { return state.xp; }
   int getMood()    const;   // effective mood — capped by hunger
   int getHunger()  const { return state.hunger; }
+  int getHealth()  const { return state.alive ? state.health : 0; }
   bool isFedToday() const { return state.fedToday; }
   bool isAlive()   const { return state.alive; }
   const char* getStageName() const;
@@ -128,4 +157,8 @@ private:
   PetState    state;
   PetSettings settings;
   void checkEvolution();
+  // Safe DIFF_* index even if a bad settings blob slips through.
+  int diff() const {
+    return settings.difficulty < 0 ? 0 : settings.difficulty > 2 ? 2 : settings.difficulty;
+  }
 };
