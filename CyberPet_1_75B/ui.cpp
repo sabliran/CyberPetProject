@@ -165,6 +165,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   walkSteps = 0; walkSensorOk = false;
   backReps = 0; backRunning = false;
   pullupReps = 0; pullupRunning = false;
+  cleanRunning = false; cleanStartMs = 0; cleanClockTimer = nullptr;
   quakeArmed = false; quakeEvents = 0;
   devSettings = { 100, 0, 200, 0, 2 };  // volume, theme, brightness, bg, sleep-min
   pushReps = 0; pushRunning = false; lastPushTapMs = 0;
@@ -180,6 +181,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   buildAppsScreen();
   buildBackScreen();
   buildPullupScreen();
+  buildCleanScreen();
   buildQuakeScreen();
   buildSettingsScreen();
   buildPushScreen();
@@ -357,7 +359,7 @@ void PetUI::buildHabitScreen() {
   lv_obj_set_scroll_dir(habitList, LV_DIR_VER);
 
   lv_obj_t* exitHint = lv_label_create(habitScreen);
-  lv_label_set_text(exitHint, "swipe " LV_SYMBOL_RIGHT " for pet");
+  lv_label_set_text(exitHint, "swipe " LV_SYMBOL_RIGHT " for Koko");
   lv_obj_align(exitHint, LV_ALIGN_BOTTOM_MID, 0, -34);
   lv_obj_set_style_text_color(exitHint, lv_color_hex(0x2A2A44), 0);
   lv_obj_set_style_text_font(exitHint, &lv_font_montserrat_14, 0);
@@ -389,7 +391,7 @@ void PetUI::buildQuestScreen() {
   lv_obj_set_scroll_dir(questList, LV_DIR_VER);  // keep horizontal swipes for the exit gesture
 
   lv_obj_t* exitHint = lv_label_create(questScreen);
-  lv_label_set_text(exitHint, LV_SYMBOL_LEFT " pet    " LV_SYMBOL_RIGHT " goals");
+  lv_label_set_text(exitHint, LV_SYMBOL_LEFT " Koko    " LV_SYMBOL_RIGHT " goals");
   lv_obj_align(exitHint, LV_ALIGN_BOTTOM_MID, 0, -34);
   lv_obj_set_style_text_color(exitHint, lv_color_hex(0x44341A), 0);
   lv_obj_set_style_text_font(exitHint, &lv_font_montserrat_14, 0);
@@ -1426,6 +1428,7 @@ static const AppEntry APP_ENTRIES[] = {
   { LV_SYMBOL_UP,        "pull-ups", 0x60D080 },
   { LV_SYMBOL_EYE_CLOSE, "sleep",    0xA080FF },
   { LV_SYMBOL_WARNING,   "quake",    0xE05060 },
+  { LV_SYMBOL_HOME,      "clean room", 0xE8B040 },
   { LV_SYMBOL_OK,        "trophies", 0xFFD060 },
 };
 static const int APP_COUNT = sizeof(APP_ENTRIES) / sizeof(APP_ENTRIES[0]);
@@ -1521,6 +1524,9 @@ void PetUI::appsBtnCB(lv_event_t* e) {
       self->showQuakeScreen();
       break;
     case 6:
+      self->showCleanScreen();
+      break;
+    case 7:
       self->showTrophyScreen();
       break;
     default:
@@ -1621,10 +1627,10 @@ void PetUI::pushBtnCB(lv_event_t* e) {
 
   self->pushRunning = false;
   if (self->pushReps >= PUSH_TARGET_REPS) {
-    self->pet->feed(45, 12);
+    self->pet->feed(20, 10);
     self->pet->addXP(PUSH_XP);
     self->refreshPetScreen();
-    lv_label_set_text_fmt(self->pushHintLabel, "fed the blob  +%d xp", PUSH_XP);
+    lv_label_set_text_fmt(self->pushHintLabel, "fed Koko  +%d xp", PUSH_XP);
     if (self->soundCB) self->soundCB(SOUND_HABIT_DONE);
     if (self->pushDoneCB) self->pushDoneCB();
     lv_timer_t* t = lv_timer_create(pushDoneTimerCB, 1200, self);
@@ -1668,7 +1674,7 @@ void PetUI::buildBackScreen() {
   lv_obj_align(backRepLabel, LV_ALIGN_CENTER, 0, -40);
 
   backHintLabel = lv_label_create(backScreen);
-  lv_label_set_text(backHintLabel, "hold the pet, press START");
+  lv_label_set_text(backHintLabel, "hold Koko, press START");
   lv_obj_set_style_text_color(backHintLabel, lv_color_hex(0x8A5A28), 0);
   lv_obj_align(backHintLabel, LV_ALIGN_CENTER, 0, 8);
 
@@ -1699,7 +1705,7 @@ void PetUI::showBackScreen() {
   backReps = 0;
   backRunning = false;
   lv_label_set_text(backRepLabel, "0");
-  lv_label_set_text(backHintLabel, "hold the pet, press START");
+  lv_label_set_text(backHintLabel, "hold Koko, press START");
   lv_label_set_text(backBtnLabel, LV_SYMBOL_PLAY "  START");
   lv_scr_load_anim(backScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
 }
@@ -1728,17 +1734,17 @@ void PetUI::backBtnCB(lv_event_t* e) {
 
   self->backRunning = false;
   if (self->backReps >= BACK_TARGET_REPS) {
-    self->pet->feed(45, 12);
+    self->pet->feed(20, 10);
     self->pet->addXP(BACK_XP);
     self->refreshPetScreen();
-    lv_label_set_text_fmt(self->backHintLabel, "fed the blob  +%d xp", BACK_XP);
+    lv_label_set_text_fmt(self->backHintLabel, "fed Koko  +%d xp", BACK_XP);
     if (self->soundCB) self->soundCB(SOUND_HABIT_DONE);
     if (self->backDoneCB) self->backDoneCB();
     // Let the reward text land, then back to the pet to see the effect.
     lv_timer_t* t = lv_timer_create(backDoneTimerCB, 1200, self);
     lv_timer_set_repeat_count(t, 1);
   } else {
-    lv_label_set_text(self->backHintLabel, "hold the pet, press START");
+    lv_label_set_text(self->backHintLabel, "hold Koko, press START");
     lv_label_set_text(self->backBtnLabel, LV_SYMBOL_PLAY "  START");
   }
 }
@@ -1776,7 +1782,7 @@ void PetUI::buildPullupScreen() {
   lv_obj_align(pullupRepLabel, LV_ALIGN_CENTER, 0, -40);
 
   pullupHintLabel = lv_label_create(pullupScreen);
-  lv_label_set_text(pullupHintLabel, "pet in pocket, press START");
+  lv_label_set_text(pullupHintLabel, "Koko in pocket, press START");
   lv_obj_set_style_text_color(pullupHintLabel, lv_color_hex(0x2A6A40), 0);
   lv_obj_align(pullupHintLabel, LV_ALIGN_CENTER, 0, 8);
 
@@ -1807,7 +1813,7 @@ void PetUI::showPullupScreen() {
   pullupReps = 0;
   pullupRunning = false;
   lv_label_set_text(pullupRepLabel, "0");
-  lv_label_set_text(pullupHintLabel, "pet in pocket, press START");
+  lv_label_set_text(pullupHintLabel, "Koko in pocket, press START");
   lv_label_set_text(pullupBtnLabel, LV_SYMBOL_PLAY "  START");
   lv_scr_load_anim(pullupScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
 }
@@ -1836,17 +1842,17 @@ void PetUI::pullupBtnCB(lv_event_t* e) {
 
   self->pullupRunning = false;
   if (self->pullupReps >= PULLUP_TARGET_REPS) {
-    self->pet->feed(45, 12);
+    self->pet->feed(20, 10);
     self->pet->addXP(PULLUP_XP);
     self->refreshPetScreen();
-    lv_label_set_text_fmt(self->pullupHintLabel, "fed the blob  +%d xp", PULLUP_XP);
+    lv_label_set_text_fmt(self->pullupHintLabel, "fed Koko  +%d xp", PULLUP_XP);
     if (self->soundCB) self->soundCB(SOUND_HABIT_DONE);
     if (self->pullupDoneCB) self->pullupDoneCB();
     // Let the reward text land, then back to the pet to see the effect.
     lv_timer_t* t = lv_timer_create(pullupDoneTimerCB, 1200, self);
     lv_timer_set_repeat_count(t, 1);
   } else {
-    lv_label_set_text(self->pullupHintLabel, "pet in pocket, press START");
+    lv_label_set_text(self->pullupHintLabel, "Koko in pocket, press START");
     lv_label_set_text(self->pullupBtnLabel, LV_SYMBOL_PLAY "  START");
   }
 }
@@ -1862,6 +1868,156 @@ void PetUI::pullupGestureCB(lv_event_t* e) {
   self->lastGestureMs = lv_tick_get();
   lv_indev_wait_release(lv_indev_get_act());
   self->pullupRunning = false;
+  self->showPetScreen();
+}
+
+/* ---- clean room screen ------------------------------------------------ */
+// 3-minute speed-clean sprint: hit START, put the pet down, tidy until the
+// ring runs out. Finishing awards XP; STOP or swiping away forfeits. No food
+// on purpose — meals stay earned by exercise.
+
+static const uint32_t CLEAN_ROOM_MS = 3 * 60 * 1000;
+static const int      CLEAN_XP      = 15;
+
+void PetUI::buildCleanScreen() {
+  cleanScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(cleanScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(cleanScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* title = lv_label_create(cleanScreen);
+  lv_label_set_text(title, "CLEAN ROOM");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xE8B040), 0);
+
+  // Countdown ring, same construction as the focus arc.
+  cleanArc = lv_arc_create(cleanScreen);
+  lv_obj_set_size(cleanArc, 300, 300);
+  lv_obj_align(cleanArc, LV_ALIGN_CENTER, 0, -16);
+  lv_arc_set_rotation(cleanArc, 270);
+  lv_arc_set_bg_angles(cleanArc, 0, 359);
+  lv_arc_set_range(cleanArc, 0, 1000);
+  lv_arc_set_value(cleanArc, 1000);
+  lv_obj_set_style_arc_color(cleanArc, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
+  lv_obj_set_style_arc_width(cleanArc, 16, LV_PART_MAIN);
+  lv_obj_set_style_arc_color(cleanArc, lv_color_hex(0xE8B040), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(cleanArc, 16, LV_PART_INDICATOR);
+  lv_obj_set_style_opa(cleanArc, LV_OPA_TRANSP, LV_PART_KNOB);
+  lv_obj_set_style_bg_opa(cleanArc, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(cleanArc, LV_OBJ_FLAG_CLICKABLE);
+
+  cleanTimeLabel = lv_label_create(cleanScreen);
+  lv_label_set_text(cleanTimeLabel, "03:00");
+  lv_obj_set_style_text_font(cleanTimeLabel, &lv_font_montserrat_32, 0);
+  lv_obj_set_style_text_color(cleanTimeLabel, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(cleanTimeLabel, LV_ALIGN_CENTER, 0, -32);
+
+  cleanHintLabel = lv_label_create(cleanScreen);
+  lv_label_set_text(cleanHintLabel, "3 minutes. go go go!");
+  lv_obj_set_style_text_color(cleanHintLabel, lv_color_hex(0x8A6A28), 0);
+  lv_obj_align(cleanHintLabel, LV_ALIGN_CENTER, 0, 8);
+
+  // START/STOP button sits inside the ring's hole, like the focus labels.
+  lv_obj_t* btn = lv_btn_create(cleanScreen);
+  lv_obj_set_size(btn, 200, 52);
+  lv_obj_align(btn, LV_ALIGN_CENTER, 0, 74);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0x201808), 0);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(btn, 16, 0);
+  lv_obj_set_style_border_width(btn, 2, 0);
+  lv_obj_set_style_border_color(btn, lv_color_hex(0xE8B040), 0);
+  cleanBtnLabel = lv_label_create(btn);
+  lv_label_set_text(cleanBtnLabel, LV_SYMBOL_PLAY "  START");
+  lv_obj_set_style_text_color(cleanBtnLabel, lv_color_hex(0xE8B040), 0);
+  lv_obj_center(cleanBtnLabel);
+  lv_obj_add_event_cb(btn, cleanBtnCB, LV_EVENT_CLICKED, this);
+
+  lv_obj_t* hint = lv_label_create(cleanScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(cleanScreen, cleanGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::showCleanScreen() {
+  cleanRunning = false;
+  if (cleanClockTimer) { lv_timer_del(cleanClockTimer); cleanClockTimer = nullptr; }
+  lv_arc_set_value(cleanArc, 1000);
+  lv_label_set_text(cleanTimeLabel, "03:00");
+  lv_label_set_text(cleanHintLabel, "3 minutes. go go go!");
+  lv_label_set_text(cleanBtnLabel, LV_SYMBOL_PLAY "  START");
+  lv_scr_load_anim(cleanScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+void PetUI::cleanBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+
+  if (!self->cleanRunning) {
+    self->cleanRunning = true;
+    self->cleanStartMs = lv_tick_get();
+    lv_arc_set_value(self->cleanArc, 1000);
+    lv_label_set_text(self->cleanTimeLabel, "03:00");
+    lv_label_set_text(self->cleanHintLabel, "tidy! Koko is watching");
+    lv_label_set_text(self->cleanBtnLabel, LV_SYMBOL_STOP "  STOP");
+    if (!self->cleanClockTimer)
+      self->cleanClockTimer = lv_timer_create(cleanClockCB, 500, self);
+    return;
+  }
+
+  // STOP mid-sprint — forfeit, back to the armed state.
+  self->cleanRunning = false;
+  if (self->cleanClockTimer) { lv_timer_del(self->cleanClockTimer); self->cleanClockTimer = nullptr; }
+  lv_arc_set_value(self->cleanArc, 1000);
+  lv_label_set_text(self->cleanTimeLabel, "03:00");
+  lv_label_set_text(self->cleanHintLabel, "3 minutes. go go go!");
+  lv_label_set_text(self->cleanBtnLabel, LV_SYMBOL_PLAY "  START");
+}
+
+void PetUI::cleanClockCB(lv_timer_t* t) {
+  PetUI* self = (PetUI*)t->user_data;
+  if (!self->cleanRunning) return;
+
+  uint32_t elapsed = lv_tick_get() - self->cleanStartMs;
+  if (elapsed >= CLEAN_ROOM_MS) {
+    // Sprint done — celebrate and stay on screen (AGAIN re-arms via START).
+    self->cleanRunning = false;
+    lv_timer_del(t);
+    self->cleanClockTimer = nullptr;
+    lv_arc_set_value(self->cleanArc, 0);
+    lv_label_set_text(self->cleanTimeLabel, "00:00");
+    lv_label_set_text_fmt(self->cleanHintLabel, "room cleaned!  +%d xp", CLEAN_XP);
+    lv_label_set_text(self->cleanBtnLabel, LV_SYMBOL_REFRESH "  AGAIN");
+
+    int stageBefore = self->pet->getStage();
+    int levelBefore = self->pet->getLevel();
+    self->pet->addXP(CLEAN_XP);
+    self->refreshPetScreen();
+    lv_area_t area;
+    lv_obj_get_coords(self->cleanArc, &area);
+    self->showXpPopup(area, CLEAN_XP);
+    if (self->pet->getStage() > stageBefore) self->showEvolutionBurst();
+    else if (self->pet->getLevel() > levelBefore)
+      self->showLevelUpPill(self->pet->getLevel());
+    if (self->soundCB) self->soundCB(SOUND_HABIT_DONE);
+    return;
+  }
+
+  uint32_t remaining = CLEAN_ROOM_MS - elapsed;
+  lv_arc_set_value(self->cleanArc, (int)(remaining * 1000 / CLEAN_ROOM_MS));
+  uint32_t secs = (remaining + 999) / 1000;  // ceil to avoid an early "00:00"
+  lv_label_set_text_fmt(self->cleanTimeLabel, "%02u:%02u",
+                        (unsigned)(secs / 60), (unsigned)(secs % 60));
+}
+
+void PetUI::cleanGestureCB(lv_event_t* e) {
+  // Any swipe cancels the sprint (no award) and returns to the pet.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->cleanRunning = false;
+  if (self->cleanClockTimer) { lv_timer_del(self->cleanClockTimer); self->cleanClockTimer = nullptr; }
   self->showPetScreen();
 }
 
@@ -2610,7 +2766,7 @@ void PetUI::buildPomodoroScreen() {
   lv_obj_add_event_cb(cancelBtn, pomCancelBtnCB, LV_EVENT_CLICKED, this);
 
   lv_obj_t* exitHint = lv_label_create(pomodoroScreen);
-  lv_label_set_text(exitHint, "swipe " LV_SYMBOL_UP " for pet");
+  lv_label_set_text(exitHint, "swipe " LV_SYMBOL_UP " for Koko");
   lv_obj_align(exitHint, LV_ALIGN_BOTTOM_MID, 0, -12);
   lv_obj_set_style_text_color(exitHint, lv_color_hex(0x3A2410), 0);
   // Bottom edge of the circle is only ~148 px wide at this y; 20 pt clips.

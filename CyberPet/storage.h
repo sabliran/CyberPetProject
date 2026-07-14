@@ -26,6 +26,19 @@ struct SleepState {
   int quality;   // 0 good, 1 medium, 2 bad
 };
 
+// Record of the last abnormal reset (panic / watchdog / brownout), written at
+// the boot that follows the crash. `reason` holds the esp_reset_reason_t
+// value; `stage` is the setup() breadcrumb the crashed boot left behind
+// (0 = it had reached loop(), so the crash hit at runtime or during sleep);
+// `wasWake` says whether the crashed boot was a deep-sleep wake.
+struct BootAnomaly {
+  uint8_t  reason;
+  uint8_t  stage;
+  uint8_t  wasWake;
+  uint8_t  pad;      // keep the blob layout explicit
+  uint32_t count;    // lifetime abnormal-reset total
+};
+
 // Wraps ESP32 NVS flash storage so pet + habit state survives reboots/power loss.
 class Storage {
 public:
@@ -92,6 +105,16 @@ public:
   // auto-sleep. Blob, change-guarded; load returns defaults when absent.
   void saveDeviceSettings(const DeviceSettings& s);
   DeviceSettings loadDeviceSettings();
+
+  // Boot forensics. Deep-sleep wake crashes happen on battery, where serial
+  // output has no listener — by the time the device is docked the panic text
+  // is long gone. The sketch leaves a stage breadcrumb as setup() progresses
+  // (0 = reached loop()), and after an abnormal reset records what killed the
+  // previous boot so it can be replayed into the bridge log later.
+  void saveBootStage(uint8_t stage, bool wasWake);
+  uint8_t loadBootStage(bool* wasWake);
+  void saveBootAnomaly(const BootAnomaly& a);
+  BootAnomaly loadBootAnomaly();
 
   // Focus app: lifetime completed 25-min blocks.
   void saveFocusSessions(uint32_t n);

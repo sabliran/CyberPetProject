@@ -17,22 +17,10 @@ void WifiSync::begin(const char* ssid, const char* password, const char* server)
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
-  Serial.print("Connecting to WiFi");
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
-    delay(300);
-    Serial.print(".");
-  }
-  Serial.println();
-
-  connected = (WiFi.status() == WL_CONNECTED);
-  if (connected) {
-    Serial.print("WiFi connected, IP: ");
-    Serial.println(WiFi.localIP());
-    resolveServerUrl();
-  } else {
-    Serial.println("WiFi connect failed - device will keep running standalone.");
-  }
+  // Deliberately no wait: blocking here held the boot splash for up to 15 s.
+  // isConnected() sees the link land on a later loop pass and resolves the
+  // server URL then; the caller's loop does the rest of the online setup.
+  Serial.println("WiFi: association started (non-blocking)");
 }
 
 void WifiSync::kickReconnect() {
@@ -74,7 +62,17 @@ void WifiSync::resolveServerUrl() {
 }
 
 bool WifiSync::isConnected() {
-  connected = (WiFi.status() == WL_CONNECTED);
+  bool now = (WiFi.status() == WL_CONNECTED);
+  if (now && !connected) {
+    // Link just came up (boot connect or a reconnect landing): announce and
+    // resolve *.local now that mDNS can work. Previously only the blocking
+    // begin() resolved, so a post-boot reconnect ran on the unresolved URL
+    // until the first HTTP failure forced a re-resolve.
+    Serial.print("WiFi connected, IP: ");
+    Serial.println(WiFi.localIP());
+    resolveServerUrl();
+  }
+  connected = now;
   return connected;
 }
 

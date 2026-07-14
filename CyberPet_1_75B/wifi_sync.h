@@ -16,14 +16,19 @@ public:
   // ssid/password: your WiFi network
   // serverUrl: e.g. "http://192.168.1.50:8080" - your machine running the
   //            docker container, NOT localhost (the device isn't the host)
+  // Non-blocking: stores credentials and kicks the association, then returns
+  // immediately (it used to block up to 15 s, which held the boot splash).
+  // Poll isConnected() to see the link land; the caller's loop is expected
+  // to do its online setup (NTP etc.) on that transition.
   void begin(const char* ssid, const char* password, const char* serverUrl);
 
+  // Live link check. On the false→true transition (boot connect or a
+  // reconnect landing) it also re-resolves *.local in the server URL.
   bool isConnected();
 
   // Non-blocking reconnect kick for the loop's self-healing: restarts the
   // association with the credentials from begin() and returns immediately;
-  // poll isConnected() on later passes to see if it landed. (begin() itself
-  // blocks up to 15 s, which would freeze the UI if used for retries.)
+  // poll isConnected() on later passes to see if it landed.
   void kickReconnect();
 
   // Call periodically from loop() (respect settings.syncIntervalSeconds,

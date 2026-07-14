@@ -189,6 +189,13 @@ public:
   bool isPullupRunning() const { return pullupRunning; }
   void setPullupDoneCallback(PullupDoneCB cb) { pullupDoneCB = cb; }
 
+  // Clean-room app: 3-minute tidy sprint from the apps menu. Finishing the
+  // full timer awards XP (no food — meals stay earned by exercise). The
+  // sketch checks isCleanRunning() so auto-sleep can't fire mid-sprint while
+  // the device lies untouched.
+  void showCleanScreen();
+  bool isCleanRunning() const { return cleanRunning; }
+
   // Settings screen (swipe up on the pet). setDeviceSettings restores the
   // NVS-loaded values at boot (also re-applies the pet background); the
   // callback fires on every user change.
@@ -328,6 +335,16 @@ private:
   bool         pullupRunning;
   PullupDoneCB pullupDoneCB = nullptr;  // deliberately NOT reset in init()
 
+  // clean-room screen widgets + state
+  lv_obj_t*   cleanScreen;
+  lv_obj_t*   cleanArc;
+  lv_obj_t*   cleanTimeLabel;
+  lv_obj_t*   cleanHintLabel;
+  lv_obj_t*   cleanBtnLabel;
+  bool        cleanRunning;
+  uint32_t    cleanStartMs;
+  lv_timer_t* cleanClockTimer;
+
   // push-up screen widgets + state
   lv_obj_t*  pushScreen;
   lv_obj_t*  pushRepLabel;
@@ -403,6 +420,7 @@ private:
   void buildAppsScreen();
   void buildBackScreen();
   void buildPullupScreen();
+  void buildCleanScreen();
   void buildQuakeScreen();
   void buildSettingsScreen();
   void applySettingsVisuals();  // sync widgets + pet bg to devSettings
@@ -428,6 +446,9 @@ private:
   static void pomClockCB(lv_timer_t* t);
   static void pomStartBtnCB(lv_event_t* e);
   static void pomCancelBtnCB(lv_event_t* e);
+  static void cleanBtnCB(lv_event_t* e);
+  static void cleanGestureCB(lv_event_t* e);
+  static void cleanClockCB(lv_timer_t* t);
   static void pomGuiltRevertCB(lv_timer_t* t);
   static void sedentaryCheckCB(lv_timer_t* t);
 

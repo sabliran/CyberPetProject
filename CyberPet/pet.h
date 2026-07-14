@@ -26,8 +26,11 @@ enum PetStage {
 };
 
 // Feeding doesn't snap hunger to 100: each completed exercise session
-// restores a fixed meal (back/pull-up apps call feed(45, 12)) against the
-// continuous hourly decay — the pet literally runs on your exercise.
+// restores a fixed meal (back/push-up/pull-up apps call feed(20, 10))
+// against the continuous hourly decay — the pet literally runs on your
+// exercise. Meal size was cut from 45 in July 2026 at the user's request:
+// one session nearly refilled the bar; at 20 against the ~72/day decay it
+// takes ~3 sessions a day to keep the pet fed.
 // (The tap-counting workout app with its Easy/Medium/Hard targets was
 // removed July 2026 in favour of the IMU-counted apps.)
 

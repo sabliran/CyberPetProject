@@ -687,6 +687,34 @@ static const uint8_t  WOM_THRESHOLD_MG = 120;  // pick-up strength, not desk bum
 
 static bool wokeFromSleep = false;  // set at boot, picks the splash wording
 
+static const char* resetReasonName(esp_reset_reason_t rr) {
+  switch (rr) {
+    case ESP_RST_POWERON:   return "power-on";
+    case ESP_RST_SW:        return "software";
+    case ESP_RST_PANIC:     return "panic";
+    case ESP_RST_INT_WDT:   return "int watchdog";
+    case ESP_RST_TASK_WDT:  return "task watchdog";
+    case ESP_RST_WDT:       return "other watchdog";
+    case ESP_RST_BROWNOUT:  return "brownout";
+    case ESP_RST_DEEPSLEEP: return "deep-sleep wake";
+    default:                return "other";
+  }
+}
+
+// Last abnormal reset, loaded from NVS at boot (count 0 = never crashed).
+// Printed at boot AND repeated every few minutes into the bridge log: a
+// wake-crash happens on battery with no serial listener, so the record has
+// to survive until the next dock to be seen.
+static BootAnomaly lastAnomaly = {};
+
+static void printCrashRecord() {
+  if (lastAnomaly.count == 0) return;
+  Serial.printf("crash record: %s at stage %u during a %s boot (x%u lifetime)\n",
+                resetReasonName((esp_reset_reason_t)lastAnomaly.reason),
+                lastAnomaly.stage, lastAnomaly.wasWake ? "wake" : "cold",
+                (unsigned)lastAnomaly.count);
+}
+
 // Swap the IMU from pedometer duty to a wake-on-motion source. Direct
 // registers, not qmi.configWakeOnMotion(): SensorLib resets the chip first,
 // which restores the CTRL9-handshake-on-INT1-pin default, so its writeCommand
@@ -743,16 +771,10 @@ void setup() {
 
   // Crash forensics: the USB bridge log keeps this line, so an unexpected
   // reboot names its cause even when the panic text is lost with the port.
+  storage.begin();  // NVS up front — the breadcrumbs below need it
   {
     esp_reset_reason_t rr = esp_reset_reason();
-    Serial.printf("boot: reset reason %d (%s)\n", (int)rr,
-        rr == ESP_RST_POWERON  ? "power-on"      :
-        rr == ESP_RST_SW       ? "software"       :
-        rr == ESP_RST_PANIC    ? "panic"          :
-        rr == ESP_RST_INT_WDT  ? "int watchdog"   :
-        rr == ESP_RST_TASK_WDT ? "task watchdog"  :
-        rr == ESP_RST_WDT      ? "other watchdog" :
-        rr == ESP_RST_BROWNOUT ? "brownout"       : "other");
+    Serial.printf("boot: reset reason %d (%s)\n", (int)rr, resetReasonName(rr));
     if (rr == ESP_RST_DEEPSLEEP) {
       wokeFromSleep = true;
       esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
@@ -760,6 +782,33 @@ void setup() {
           wc == ESP_SLEEP_WAKEUP_EXT0 ? "screen tap" :
           wc == ESP_SLEEP_WAKEUP_EXT1 ? "pickup (IMU)" : "other");
     }
+    // The previous boot's breadcrumb says how far it got (0 = reached
+    // loop()); an abnormal reset pins it plus the reset reason in NVS so the
+    // record survives battery-time crashes nobody was listening to.
+    bool prevWake = false;
+    uint8_t prevStage = storage.loadBootStage(&prevWake);
+    if (rr == ESP_RST_PANIC || rr == ESP_RST_INT_WDT || rr == ESP_RST_TASK_WDT ||
+        rr == ESP_RST_WDT || rr == ESP_RST_BROWNOUT) {
+      BootAnomaly a = storage.loadBootAnomaly();
+      a.reason  = (uint8_t)rr;
+      a.stage   = prevStage;
+      a.wasWake = prevWake ? 1 : 0;
+      a.count++;
+      storage.saveBootAnomaly(a);
+    }
+    storage.saveBootStage(1, wokeFromSleep);  // stage 1: setup() entered
+    lastAnomaly = storage.loadBootAnomaly();
+    printCrashRecord();
+  }
+
+  // Deep-sleep wake leaves the ext0/ext1 wake pads under RTC-mux control —
+  // the IDF docs require rtc_gpio_deinit() before the pad works as a digital
+  // GPIO again. Without this the touch INT (GPIO11) can stay routed away
+  // from the GPIO matrix after a wake: screen on, touch dead, looks crashed.
+  if (wokeFromSleep) {
+    rtc_gpio_deinit((gpio_num_t)TP_INT);
+    rtc_gpio_pullup_dis((gpio_num_t)TP_INT);
+    rtc_gpio_deinit(GPIO_NUM_21);  // QMI_INT2 (pickup wake)
   }
 
   Wire.begin(IIC_SDA, IIC_SCL);
@@ -873,6 +922,8 @@ void setup() {
     Serial.println("audio init failed - habit sounds disabled");
   }
 
+  storage.saveBootStage(2, wokeFromSleep);  // stage 2: peripherals up, display next
+
   gfx->begin();
   gfx->setBrightness(200);
 
@@ -929,8 +980,6 @@ void setup() {
   esp_timer_handle_t tick_timer;
   ESP_ERROR_CHECK(esp_timer_create(&tick_args, &tick_timer));
   ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer, 2 * 1000));
-
-  storage.begin();
 
   PetState savedPet = storage.loadPet();
   pet.init(savedPet);
@@ -999,15 +1048,14 @@ void setup() {
                       sleepState.quality);
   }
 
+  storage.saveBootStage(3, wokeFromSleep);  // stage 3: display + UI up, WiFi next
+
   if (strlen(WIFI_SSID) > 0) {
+    // Association kick only — begin() no longer blocks waiting for the link
+    // (it used to hold the boot splash ~15 s). The loop's WiFi block already
+    // finishes the online setup (NTP, SSE, OTA) once the link lands, same
+    // path as recovering from a boot-time AP outage.
     wifiSync.begin(WIFI_SSID, WIFI_PASSWORD, DASHBOARD_URL);
-    if (wifiSync.isConnected()) {
-      configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-      setenv("TZ", TIMEZONE, 1);
-      tzset();
-      ntpEnabled = true;
-      wifiSync.beginEventStream();
-    }
   }
 
   lastResetYear = storage.loadLastResetYear();
@@ -1028,6 +1076,8 @@ void setup() {
       ui.showSleepScreen();
     }
   }
+
+  storage.saveBootStage(4, wokeFromSleep);  // stage 4: setup() complete
 }
 
 // After every successful sync: push results to the UI and cache the
@@ -1076,6 +1126,15 @@ static void fireDailyReset() {
 }
 
 void loop() {
+  // Boot forensics: stage 0 = this boot made it out of setup() and into the
+  // main loop. A later abnormal reset then reads as a runtime crash, not a
+  // boot-path one.
+  static bool loopStamped = false;
+  if (!loopStamped) {
+    loopStamped = true;
+    storage.saveBootStage(0, wokeFromSleep);
+  }
+
   // LVGL runs here — no display task on this board.
   lv_timer_handler();
 
@@ -1219,6 +1278,14 @@ void loop() {
                     (unsigned)swSteps,
                     (unsigned)(imuOk ? qmi.getPedometerCounter() : 0),
                     (unsigned)m.free_size, (unsigned)m.frag_pct);
+      // Repeat the crash record every ~5 min: a wake-crash on battery has
+      // already lost its boot lines by the time the device gets docked, and
+      // docking doesn't reboot — this is how the record reaches the bridge.
+      static uint8_t crashRecordTick = 0;
+      if (++crashRecordTick >= 10) {
+        crashRecordTick = 0;
+        printCrashRecord();
+      }
     }
   }
 
@@ -1390,7 +1457,8 @@ void loop() {
       uint32_t sleepMs = (uint32_t)devCfg.sleepMin * 60000UL;
       uint32_t dimMs   = sleepMs * 3 / 4;
       bool inhibited = pocketMode || ui.isFocusRunning() || ui.isBackRunning() ||
-                       ui.isPullupRunning() || ui.isQuakeArmed() || capPending ||
+                       ui.isPullupRunning() || ui.isCleanRunning() ||
+                       ui.isQuakeArmed() || capPending ||
                        (pmuOk && power.isVbusIn()) ||
                        (swLastStepMs != 0 && millis() - swLastStepMs < sleepMs);
       if (inhibited || idle < dimMs) {

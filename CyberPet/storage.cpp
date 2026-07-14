@@ -224,6 +224,29 @@ DeviceSettings Storage::loadDeviceSettings() {
   return s;
 }
 
+void Storage::saveBootStage(uint8_t stage, bool wasWake) {
+  // No change-guard needed: NVS itself skips writes when the value is
+  // unchanged, and this runs a handful of times per boot.
+  prefs.putUChar("boot_stage", stage);
+  prefs.putUChar("boot_wake", wasWake ? 1 : 0);
+}
+
+uint8_t Storage::loadBootStage(bool* wasWake) {
+  if (wasWake) *wasWake = prefs.getUChar("boot_wake", 0) != 0;
+  return prefs.getUChar("boot_stage", 0);
+}
+
+void Storage::saveBootAnomaly(const BootAnomaly& a) {
+  prefs.putBytes("boot_anom", &a, sizeof(BootAnomaly));
+}
+
+BootAnomaly Storage::loadBootAnomaly() {
+  BootAnomaly a = {};
+  if (prefs.getBytesLength("boot_anom") == sizeof(BootAnomaly))
+    prefs.getBytes("boot_anom", &a, sizeof(BootAnomaly));
+  return a;
+}
+
 void Storage::saveFocusSessions(uint32_t n) {
   if (loadFocusSessions() == n) return;
   prefs.putUInt("focus_sessions", n);
