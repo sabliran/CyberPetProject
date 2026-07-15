@@ -138,10 +138,12 @@ private:
   // after WiFi connects (plain DNS can't see .local names), and re-resolved
   // after an HTTP connection failure in case the host's DHCP lease moved.
   void resolveServerUrl();
+  bool serverUrlUsable();      // false while serverUrl still holds *.local (skip dialing)
   String ssid_;                // stored by begin() for kickReconnect()
   String password_;
   String serverUrlConfigured;  // as passed to begin(); may contain *.local
   bool   mdnsStarted = false;
+  uint32_t lastResolveMs = 0;  // resolveServerUrl rate limit (blocking mDNS)
   String serverUrl;            // resolved form actually used for requests
   bool connected = false;
   int  lastKnownConfigVersion = -1; // -1 forces a sync on the very first check

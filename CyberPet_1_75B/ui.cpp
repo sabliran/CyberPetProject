@@ -166,6 +166,8 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   backReps = 0; backRunning = false;
   pullupReps = 0; pullupRunning = false;
   cleanRunning = false; cleanStartMs = 0; cleanClockTimer = nullptr;
+  sitRunning = false; sitAlerting = false; sitIntervalMin = 20;
+  sitStartMs = 0; sitLastChimeMs = 0; sitClockTimer = nullptr;
   quakeArmed = false; quakeEvents = 0;
   devSettings = { 100, 0, 200, 0, 2 };  // volume, theme, brightness, bg, sleep-min
   pushReps = 0; pushRunning = false; lastPushTapMs = 0;
@@ -182,6 +184,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   buildBackScreen();
   buildPullupScreen();
   buildCleanScreen();
+  buildSitScreen();
   buildQuakeScreen();
   buildSettingsScreen();
   buildPushScreen();
@@ -309,7 +312,10 @@ void PetUI::buildPetScreen() {
   healthBar = lv_bar_create(petScreen);
   lv_obj_set_size(healthBar, 60, 6);
   lv_bar_set_range(healthBar, 0, 100);
-  lv_obj_set_style_bg_color(healthBar, lv_color_hex(0x0E0E1C), 0);
+  // Red track = the game convention for lost HP: the depleted part of the
+  // bar reads as damage at a glance (a near-black track just looked like a
+  // shorter bar).
+  lv_obj_set_style_bg_color(healthBar, lv_color_hex(0x8A1622), 0);
   lv_obj_set_style_bg_opa(healthBar, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(healthBar, lv_color_hex(0x3EE8A0), LV_PART_INDICATOR);
   lv_obj_set_style_bg_opa(healthBar, LV_OPA_COVER, LV_PART_INDICATOR);
@@ -1486,6 +1492,7 @@ static const AppEntry APP_ENTRIES[] = {
   { LV_SYMBOL_EYE_CLOSE, "sleep",    0xA080FF },
   { LV_SYMBOL_WARNING,   "quake",    0xE05060 },
   { LV_SYMBOL_HOME,      "clean room", 0xE8B040 },
+  { LV_SYMBOL_BELL,      "sit",      0x40C8D8 },
   { LV_SYMBOL_OK,        "trophies", 0xFFD060 },
 };
 static const int APP_COUNT = sizeof(APP_ENTRIES) / sizeof(APP_ENTRIES[0]);
@@ -1508,8 +1515,10 @@ void PetUI::buildAppsScreen() {
   // full-width row. Grid extents (4 rows = 296 px tall, 328 px wide) clear
   // the 466 px circle: at the top row's edge (y=85) the glass is 360 wide.
   const bool grid = APP_COUNT > 4;
-  const int  bw = 160, bh = 68, gx = 8, gy = 8;   // grid cell + gaps
   const int  rows = (APP_COUNT + 1) / 2;
+  // 5 rows only fit the round glass with slightly shorter cells: 5×58+4×6 =
+  // 314 px tall keeps the top row's button corners inside the 233 px radius.
+  const int  bw = 160, bh = (rows > 4) ? 58 : 68, gx = 8, gy = (rows > 4) ? 6 : 8;
   const int  btnH = 72, gap = 20, pitch = btnH + gap;  // single-column sizes
   for (int i = 0; i < APP_COUNT; i++) {
     lv_obj_t* btn = lv_btn_create(appsScreen);
@@ -1584,6 +1593,9 @@ void PetUI::appsBtnCB(lv_event_t* e) {
       self->showCleanScreen();
       break;
     case 7:
+      self->showSitScreen();
+      break;
+    case 8:
       self->showTrophyScreen();
       break;
     default:
@@ -1614,21 +1626,26 @@ void PetUI::buildPushScreen() {
   pushHintLabel = lv_label_create(pushScreen);
   lv_label_set_text(pushHintLabel, "put it under you, press START");
   lv_obj_set_style_text_color(pushHintLabel, lv_color_hex(0x8A3A55), 0);
+  lv_obj_set_style_text_align(pushHintLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(pushHintLabel, LV_ALIGN_CENTER, 0, 8);
 
-  lv_obj_t* btn = lv_btn_create(pushScreen);
-  lv_obj_set_size(btn, 240, 56);
-  lv_obj_align(btn, LV_ALIGN_CENTER, 0, 78);
-  lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A0A18), 0);
-  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(btn, 16, 0);
-  lv_obj_set_style_border_width(btn, 2, 0);
-  lv_obj_set_style_border_color(btn, lv_color_hex(0xF06090), 0);
-  pushBtnLabel = lv_label_create(btn);
+  // START only — the button hides during the session. Finishing is the
+  // physical BOOT button (the sketch calls finishPushSession): mid-push-up
+  // an on-screen DONE is both a mis-tap hazard for the nose counter and
+  // hard to hit deliberately.
+  pushStartBtn = lv_btn_create(pushScreen);
+  lv_obj_set_size(pushStartBtn, 240, 56);
+  lv_obj_align(pushStartBtn, LV_ALIGN_CENTER, 0, 78);
+  lv_obj_set_style_bg_color(pushStartBtn, lv_color_hex(0x2A0A18), 0);
+  lv_obj_set_style_bg_opa(pushStartBtn, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(pushStartBtn, 16, 0);
+  lv_obj_set_style_border_width(pushStartBtn, 2, 0);
+  lv_obj_set_style_border_color(pushStartBtn, lv_color_hex(0xF06090), 0);
+  pushBtnLabel = lv_label_create(pushStartBtn);
   lv_label_set_text(pushBtnLabel, LV_SYMBOL_PLAY "  START");
   lv_obj_set_style_text_color(pushBtnLabel, lv_color_hex(0xF06090), 0);
   lv_obj_center(pushBtnLabel);
-  lv_obj_add_event_cb(btn, pushBtnCB, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(pushStartBtn, pushBtnCB, LV_EVENT_CLICKED, this);
 
   lv_obj_t* hint = lv_label_create(pushScreen);
   lv_label_set_text(hint, "swipe to close");
@@ -1647,7 +1664,7 @@ void PetUI::showPushScreen() {
   pushRunning = false;
   lv_label_set_text(pushRepLabel, "0");
   lv_label_set_text(pushHintLabel, "put it under you, press START");
-  lv_label_set_text(pushBtnLabel, LV_SYMBOL_PLAY "  START");
+  lv_obj_clear_flag(pushStartBtn, LV_OBJ_FLAG_HIDDEN);
   lv_scr_load_anim(pushScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
 }
 
@@ -1665,36 +1682,40 @@ void PetUI::pushTapCB(lv_event_t* e) {
   lv_label_set_text_fmt(self->pushRepLabel, "%d", self->pushReps);
   if (self->soundCB) self->soundCB(SOUND_REP_BLIP);  // audible confirm per nose-tap
   if (self->pushReps == PUSH_TARGET_REPS)
-    lv_label_set_text(self->pushHintLabel, "target hit! keep going or DONE");
+    lv_label_set_text(self->pushHintLabel, "target hit!\nkeep going, or BOOT = done");
 }
 
 void PetUI::pushBtnCB(lv_event_t* e) {
   PetUI* self = (PetUI*)lv_event_get_user_data(e);
   if (lv_tick_get() - self->lastGestureMs < 600) return;
+  if (self->pushRunning) return;  // unreachable (button hidden), belt & braces
 
-  if (!self->pushRunning) {
-    self->pushRunning = true;
-    self->pushReps = 0;
-    self->lastPushTapMs = lv_tick_get();  // arm debounce so this press can't count
-    lv_label_set_text(self->pushRepLabel, "0");
-    lv_label_set_text_fmt(self->pushHintLabel, "boop with your nose! %d = snack", PUSH_TARGET_REPS);
-    lv_label_set_text_fmt(self->pushBtnLabel, LV_SYMBOL_OK "  DONE (need %d)", PUSH_TARGET_REPS);
-    return;
-  }
+  self->pushRunning = true;
+  self->pushReps = 0;
+  self->lastPushTapMs = lv_tick_get();  // arm debounce so this press can't count
+  lv_label_set_text(self->pushRepLabel, "0");
+  lv_label_set_text_fmt(self->pushHintLabel,
+      "boop with your nose! %d = snack\nBOOT button = done", PUSH_TARGET_REPS);
+  lv_obj_add_flag(self->pushStartBtn, LV_OBJ_FLAG_HIDDEN);
+}
 
-  self->pushRunning = false;
-  if (self->pushReps >= PUSH_TARGET_REPS) {
-    self->pet->feedWorkout();  // meal size scales with dashboard difficulty
-    self->pet->addXP(PUSH_XP);
-    self->refreshPetScreen();
-    lv_label_set_text_fmt(self->pushHintLabel, "fed Koko  +%d xp", PUSH_XP);
-    if (self->soundCB) self->soundCB(SOUND_HABIT_DONE);
-    if (self->pushDoneCB) self->pushDoneCB();
-    lv_timer_t* t = lv_timer_create(pushDoneTimerCB, 1200, self);
+// Session end, driven by the physical BOOT button (sketch calls this when
+// isPushRunning()). Awards if the target was reached, else back to armed.
+void PetUI::finishPushSession() {
+  if (!pushRunning) return;
+  pushRunning = false;
+  lv_obj_clear_flag(pushStartBtn, LV_OBJ_FLAG_HIDDEN);
+  if (pushReps >= PUSH_TARGET_REPS) {
+    pet->feedWorkout();  // meal size scales with dashboard difficulty
+    pet->addXP(PUSH_XP);
+    refreshPetScreen();
+    lv_label_set_text_fmt(pushHintLabel, "fed Koko  +%d xp", PUSH_XP);
+    if (soundCB) soundCB(SOUND_HABIT_DONE);
+    if (pushDoneCB) pushDoneCB();
+    lv_timer_t* t = lv_timer_create(pushDoneTimerCB, 1200, this);
     lv_timer_set_repeat_count(t, 1);
   } else {
-    lv_label_set_text(self->pushHintLabel, "put it under you, press START");
-    lv_label_set_text(self->pushBtnLabel, LV_SYMBOL_PLAY "  START");
+    lv_label_set_text(pushHintLabel, "put it under you, press START");
   }
 }
 
@@ -2078,6 +2099,259 @@ void PetUI::cleanGestureCB(lv_event_t* e) {
   self->showPetScreen();
 }
 
+/* ---- sitting / move-reminder screen ----------------------------------- */
+// "I'm sitting": pick an interval, press START, put the device on the desk.
+// When the interval runs out the screen turns alarm-red and an insistent
+// chime repeats every minute until you tap that you moved — that re-arms
+// the app (START begins the next round when you actually sit back down).
+// Swipe closes and stops the reminders. The sketch inhibits auto-sleep
+// while a session runs; a deep-sleeping device can't nag.
+
+static const uint8_t  SIT_CHOICES[4] = { 5, 10, 15, 20 };  // minutes (20 max — short cycles)
+static const uint32_t SIT_CHIME_GAP_MS = 60000;
+
+void PetUI::buildSitScreen() {
+  sitScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(sitScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(sitScreen, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(sitScreen, LV_OBJ_FLAG_CLICKABLE);  // tap anywhere = "I moved" ack
+
+  lv_obj_t* title = lv_label_create(sitScreen);
+  lv_label_set_text(title, "SIT");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_style_text_color(title, lv_color_hex(0x40C8D8), 0);
+
+  sitArc = lv_arc_create(sitScreen);
+  lv_obj_set_size(sitArc, 280, 280);
+  lv_obj_align(sitArc, LV_ALIGN_CENTER, 0, -30);
+  lv_arc_set_rotation(sitArc, 270);
+  lv_arc_set_bg_angles(sitArc, 0, 359);
+  lv_arc_set_range(sitArc, 0, 1000);
+  lv_arc_set_value(sitArc, 1000);
+  lv_obj_set_style_arc_color(sitArc, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
+  lv_obj_set_style_arc_width(sitArc, 14, LV_PART_MAIN);
+  lv_obj_set_style_arc_color(sitArc, lv_color_hex(0x40C8D8), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(sitArc, 14, LV_PART_INDICATOR);
+  lv_obj_set_style_opa(sitArc, LV_OPA_TRANSP, LV_PART_KNOB);
+  lv_obj_set_style_bg_opa(sitArc, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(sitArc, LV_OBJ_FLAG_CLICKABLE);
+
+  sitTimeLabel = lv_label_create(sitScreen);
+  lv_label_set_text(sitTimeLabel, "20:00");
+  lv_obj_set_style_text_font(sitTimeLabel, &lv_font_montserrat_32, 0);
+  lv_obj_set_style_text_color(sitTimeLabel, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(sitTimeLabel, LV_ALIGN_CENTER, 0, -46);
+
+  sitHintLabel = lv_label_create(sitScreen);
+  lv_label_set_text(sitHintLabel, "sitting? I'll nag you to stand");
+  lv_obj_set_style_text_color(sitHintLabel, lv_color_hex(0x1E6A74), 0);
+  lv_obj_set_style_text_align(sitHintLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(sitHintLabel, LV_ALIGN_CENTER, 0, -4);
+
+  lv_obj_t* btn = lv_btn_create(sitScreen);
+  lv_obj_set_size(btn, 190, 48);
+  lv_obj_align(btn, LV_ALIGN_CENTER, 0, 56);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0x08222A), 0);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(btn, 14, 0);
+  lv_obj_set_style_border_width(btn, 2, 0);
+  lv_obj_set_style_border_color(btn, lv_color_hex(0x40C8D8), 0);
+  sitBtnLabel = lv_label_create(btn);
+  lv_label_set_text(sitBtnLabel, LV_SYMBOL_PLAY "  START");
+  lv_obj_set_style_text_color(sitBtnLabel, lv_color_hex(0x40C8D8), 0);
+  lv_obj_center(sitBtnLabel);
+  lv_obj_add_event_cb(btn, sitBtnCB, LV_EVENT_CLICKED, this);
+
+  // Interval row (only reacts while idle)
+  for (int i = 0; i < 4; i++) {
+    lv_obj_t* cb = lv_btn_create(sitScreen);
+    lv_obj_set_size(cb, 64, 36);
+    lv_obj_align(cb, LV_ALIGN_TOP_MID, (i * 72) - 108, 340);
+    lv_obj_set_style_bg_color(cb, lv_color_hex(0x10101E), 0);
+    lv_obj_set_style_radius(cb, 10, 0);
+    lv_obj_set_style_border_width(cb, 2, 0);
+    lv_obj_set_style_border_color(cb, lv_color_hex(0x1E3A44), 0);
+    lv_obj_t* lbl = lv_label_create(cb);
+    lv_label_set_text_fmt(lbl, "%dm", SIT_CHOICES[i]);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0x8AA8B0), 0);
+    lv_obj_center(lbl);
+    lv_obj_set_user_data(cb, (void*)(intptr_t)i);
+    lv_obj_add_event_cb(cb, sitChoiceCB, LV_EVENT_CLICKED, this);
+    sitChoiceBtns[i] = cb;
+  }
+
+  // "screen off" — takes the choice row's spot while a session runs. Saves
+  // battery over a long sit; BOOT wakes the display (the sketch owns the
+  // panel via screenPowerCB) and the alert always wakes it by itself.
+  sitScreenOffBtn = lv_btn_create(sitScreen);
+  lv_obj_set_size(sitScreenOffBtn, 200, 36);
+  lv_obj_align(sitScreenOffBtn, LV_ALIGN_TOP_MID, 0, 340);
+  lv_obj_set_style_bg_color(sitScreenOffBtn, lv_color_hex(0x10101E), 0);
+  lv_obj_set_style_radius(sitScreenOffBtn, 10, 0);
+  lv_obj_set_style_border_width(sitScreenOffBtn, 2, 0);
+  lv_obj_set_style_border_color(sitScreenOffBtn, lv_color_hex(0x1E3A44), 0);
+  {
+    lv_obj_t* lbl = lv_label_create(sitScreenOffBtn);
+    lv_label_set_text(lbl, LV_SYMBOL_EYE_CLOSE "  screen off (BOOT wakes)");
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0x8AA8B0), 0);
+    lv_obj_center(lbl);
+  }
+  lv_obj_add_flag(sitScreenOffBtn, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_event_cb(sitScreenOffBtn, [](lv_event_t* e) {
+    PetUI* self = (PetUI*)lv_event_get_user_data(e);
+    if (self->screenPowerCB) self->screenPowerCB(false);
+  }, LV_EVENT_CLICKED, this);
+
+  lv_obj_t* hint = lv_label_create(sitScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(sitScreen, sitTapCB, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(sitScreen, sitGestureCB, LV_EVENT_GESTURE, this);
+}
+
+// While idle the interval choices show; while running they swap for the
+// screen-off button (interval is locked anyway). Neither shows during the
+// alert — the whole screen is the "I moved" button then.
+void PetUI::sitUpdateAux() {
+  for (int i = 0; i < 4; i++) {
+    if (sitRunning) lv_obj_add_flag(sitChoiceBtns[i], LV_OBJ_FLAG_HIDDEN);
+    else            lv_obj_clear_flag(sitChoiceBtns[i], LV_OBJ_FLAG_HIDDEN);
+  }
+  if (sitRunning && !sitAlerting) lv_obj_clear_flag(sitScreenOffBtn, LV_OBJ_FLAG_HIDDEN);
+  else                            lv_obj_add_flag(sitScreenOffBtn, LV_OBJ_FLAG_HIDDEN);
+}
+
+void PetUI::sitMarkChoice() {
+  for (int i = 0; i < 4; i++) {
+    bool sel = (SIT_CHOICES[i] == sitIntervalMin);
+    lv_obj_set_style_border_color(sitChoiceBtns[i],
+      lv_color_hex(sel ? 0x40C8D8 : 0x1E3A44), 0);
+  }
+}
+
+void PetUI::showSitScreen() {
+  // Re-entering mid-session keeps the countdown (it's the whole point);
+  // fresh entry shows the armed state.
+  if (!sitRunning) {
+    lv_arc_set_value(sitArc, 1000);
+    lv_label_set_text_fmt(sitTimeLabel, "%02d:00", sitIntervalMin);
+    lv_label_set_text(sitHintLabel, "sitting? I'll nag you to stand");
+    lv_label_set_text(sitBtnLabel, LV_SYMBOL_PLAY "  START");
+  }
+  sitMarkChoice();
+  sitUpdateAux();
+  lv_scr_load_anim(sitScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+void PetUI::sitStop() {
+  sitRunning = false;
+  sitAlerting = false;
+  if (sitClockTimer) { lv_timer_del(sitClockTimer); sitClockTimer = nullptr; }
+  lv_obj_set_style_bg_color(sitScreen, lv_color_hex(0x000000), 0);
+  lv_arc_set_value(sitArc, 1000);
+  lv_label_set_text_fmt(sitTimeLabel, "%02d:00", sitIntervalMin);
+  lv_label_set_text(sitHintLabel, "sitting? I'll nag you to stand");
+  lv_label_set_text(sitBtnLabel, LV_SYMBOL_PLAY "  START");
+  sitUpdateAux();
+}
+
+void PetUI::sitEnterAlert() {
+  sitAlerting = true;
+  sitLastChimeMs = lv_tick_get();
+  if (screenPowerCB) screenPowerCB(true);  // a dark nag is no nag
+  sitUpdateAux();
+  lv_obj_set_style_bg_color(sitScreen, lv_color_hex(0x38100A), 0);
+  lv_arc_set_value(sitArc, 0);
+  lv_label_set_text(sitTimeLabel, "MOVE!");
+  lv_label_set_text(sitHintLabel, "stand up, stretch, walk a bit\ntap anywhere when you did");
+  lv_label_set_text(sitBtnLabel, LV_SYMBOL_OK "  I MOVED");
+  if (soundCB) soundCB(SOUND_MOVE_ALERT);
+}
+
+void PetUI::sitAckMoved() {
+  // Back to armed — the next round starts only when the user presses START
+  // again (auto-restart nagged people who had actually left the desk).
+  sitStop();
+  lv_label_set_text(sitHintLabel, "nice! press START when you sit again");
+}
+
+void PetUI::sitBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+
+  if (!self->sitRunning) {
+    self->sitRunning  = true;
+    self->sitAlerting = false;
+    self->sitStartMs  = lv_tick_get();
+    lv_label_set_text_fmt(self->sitHintLabel, "reminder in %d min", self->sitIntervalMin);
+    lv_label_set_text(self->sitBtnLabel, LV_SYMBOL_STOP "  STOP");
+    self->sitUpdateAux();
+    if (!self->sitClockTimer)
+      self->sitClockTimer = lv_timer_create(sitClockCB, 500, self);
+    return;
+  }
+  if (self->sitAlerting) { self->sitAckMoved(); return; }
+  self->sitStop();
+}
+
+void PetUI::sitChoiceCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (self->sitRunning) return;  // interval locked during a session
+  int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+  self->sitIntervalMin = SIT_CHOICES[idx];
+  self->sitMarkChoice();
+  lv_label_set_text_fmt(self->sitTimeLabel, "%02d:00", self->sitIntervalMin);
+}
+
+void PetUI::sitTapCB(lv_event_t* e) {
+  // During the alert the whole screen is the "I moved" button — precision
+  // is not a thing right after being startled off a chair.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (!self->sitAlerting) return;
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  self->sitAckMoved();
+}
+
+void PetUI::sitClockCB(lv_timer_t* t) {
+  PetUI* self = (PetUI*)t->user_data;
+  if (!self->sitRunning) return;
+
+  if (self->sitAlerting) {
+    // Nag again every minute until acknowledged.
+    if (lv_tick_get() - self->sitLastChimeMs >= SIT_CHIME_GAP_MS) {
+      self->sitLastChimeMs = lv_tick_get();
+      if (self->soundCB) self->soundCB(SOUND_MOVE_ALERT);
+    }
+    return;
+  }
+
+  uint32_t totalMs = (uint32_t)self->sitIntervalMin * 60000UL;
+  uint32_t elapsed = lv_tick_get() - self->sitStartMs;
+  if (elapsed >= totalMs) {
+    self->sitEnterAlert();
+    return;
+  }
+  uint32_t remaining = totalMs - elapsed;
+  lv_arc_set_value(self->sitArc, (int)(remaining * 1000 / totalMs));
+  uint32_t secs = (remaining + 999) / 1000;
+  lv_label_set_text_fmt(self->sitTimeLabel, "%02u:%02u",
+                        (unsigned)(secs / 60), (unsigned)(secs % 60));
+}
+
+void PetUI::sitGestureCB(lv_event_t* e) {
+  // Any swipe stops the reminders and returns to the pet.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->sitStop();
+  self->showPetScreen();
+}
+
 /* ---- quake watch screen ---------------------------------------------- */
 
 void PetUI::buildQuakeScreen() {
@@ -2305,6 +2579,15 @@ void PetUI::buildSettingsScreen() {
   lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
   lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
 
+  // WiFi + dashboard status (bottom): fed by the sketch via setWifiStatus.
+  setWifiLabel = lv_label_create(settingsScreen);
+  lv_obj_set_width(setWifiLabel, 320);
+  lv_obj_set_style_text_align(setWifiLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(setWifiLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(setWifiLabel, lv_color_hex(0x5A6478), 0);
+  lv_label_set_text(setWifiLabel, LV_SYMBOL_WIFI "  checking...");
+  lv_obj_align(setWifiLabel, LV_ALIGN_TOP_MID, 0, 388);
+
   lv_obj_add_event_cb(settingsScreen, settingsGestureCB, LV_EVENT_GESTURE, this);
 }
 
@@ -2396,6 +2679,18 @@ void PetUI::setSleepBtnCB(lv_event_t* e) {
   self->devSettings.sleepMin = SLEEP_CHOICES[idx];
   self->applySettingsVisuals();
   if (self->settingsCB) self->settingsCB(self->devSettings);
+}
+
+void PetUI::setWifiStatus(bool connected, const char* text) {
+  char buf[96];
+  snprintf(buf, sizeof(buf), "%s  %s",
+           connected ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING, text);
+  // Change-guarded: the sketch pushes every few seconds; don't invalidate
+  // the label (and redraw that strip) when nothing moved.
+  if (strcmp(lv_label_get_text(setWifiLabel), buf) == 0) return;
+  lv_label_set_text(setWifiLabel, buf);
+  lv_obj_set_style_text_color(setWifiLabel,
+    lv_color_hex(connected ? 0x3EE8A0 : 0xE05060), 0);
 }
 
 void PetUI::settingsGestureCB(lv_event_t* e) {

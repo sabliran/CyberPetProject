@@ -79,6 +79,7 @@ enum PetSoundEvent {
   SOUND_TROPHY,        // new trophy arrived in a sync — little fanfare
   SOUND_REP_BLIP,      // quiet blip per counted rep (pull-ups, push-ups)
   SOUND_QUAKE,         // loud two-tone siren — quake watch triggered
+  SOUND_MOVE_ALERT,    // insistent stand-up chime (sitting app; repeats until acked)
 };
 typedef void (*PetSoundCB)(int event);
 
@@ -93,6 +94,12 @@ typedef void (*SleepLogCB)(int quality);
 // touch until the BOOT button is pressed; step counting keeps running).
 // Unset = the button does nothing (sim has no panel to blank).
 typedef void (*PocketModeCB)(void);
+
+// Sit app display power: the UI can't touch the panel (hardware-agnostic),
+// so it asks the sketch. false = screen dark to save battery while the sit
+// timer runs (BOOT turns it back on); true = wake it (the stand-up alert
+// always fires this before chiming — a dark nag is no nag).
+typedef void (*ScreenPowerCB)(bool on);
 
 // Back-workout app: fired when a session ends with the target reached
 // (after the pet reward is applied). The sketch bumps its lifetime session
@@ -173,6 +180,7 @@ public:
   void showWalkScreen();
   void setSteps(uint32_t stepsToday, bool sensorOk);
   void setPocketModeCallback(PocketModeCB cb) { pocketCB = cb; }
+  void setScreenPowerCallback(ScreenPowerCB cb) { screenPowerCB = cb; }
 
   // Back-workout app: rep counter driven by the board's IMU. The sketch's
   // swing detector calls addBackRep() while isBackRunning() — cheap no-op
@@ -196,10 +204,23 @@ public:
   void showCleanScreen();
   bool isCleanRunning() const { return cleanRunning; }
 
+  // Sitting / move-reminder app: tell the device you're sitting and it nags
+  // you to stand up at the chosen interval; the alert chime repeats every
+  // minute until you tap that you moved, which re-arms the app (no auto-
+  // restart — START begins the next round). The sketch inhibits auto-sleep
+  // while isSitRunning() — a deep-sleeping device can't nag anyone.
+  void showSitScreen();
+  bool isSitRunning() const { return sitRunning; }
+
   // Settings screen (swipe up on the pet). setDeviceSettings restores the
   // NVS-loaded values at boot (also re-applies the pet background); the
   // callback fires on every user change.
   void showSettingsScreen();
+  // WiFi/dashboard status line at the bottom of the settings screen. The UI
+  // is hardware-agnostic, so the sketch pushes the state in (every few
+  // seconds); green when the link is up, red otherwise. `text` may be two
+  // lines: link status + dashboard reachability.
+  void setWifiStatus(bool connected, const char* text);
   void setDeviceSettings(const DeviceSettings& s);
   const DeviceSettings& getDeviceSettings() const { return devSettings; }
   void setSettingsCallback(SettingsChangedCB cb) { settingsCB = cb; }
@@ -214,8 +235,13 @@ public:
   void quakeCalm(int peakMilliG);
 
   // Push-up app: rep counting is pure touch (nose-taps), so the UI owns it
-  // entirely; the sketch only registers the session-done callback.
+  // entirely; the sketch registers the session-done callback and drives the
+  // session end from the physical BOOT button: while isPushRunning() a short
+  // press calls finishPushSession() instead of opening the apps menu (no
+  // on-screen DONE — mid-push-up it was a nose-tap mis-hit hazard).
   void showPushScreen();
+  bool isPushRunning() const { return pushRunning; }
+  void finishPushSession();
   void setPushDoneCallback(PushDoneCB cb) { pushDoneCB = cb; }
   void setFocusDoneCallback(FocusDoneCB cb) { focusDoneCB = cb; }
 
@@ -309,6 +335,7 @@ private:
   // settings screen widgets + state
   lv_obj_t*  settingsScreen;
   lv_obj_t*  setVolSlider;
+  lv_obj_t*  setWifiLabel;
   lv_obj_t*  setBriSlider;
   lv_obj_t*  setThemeBtns[3];
   lv_obj_t*  setBgBtns[5];
@@ -335,6 +362,26 @@ private:
   bool         pullupRunning;
   PullupDoneCB pullupDoneCB = nullptr;  // deliberately NOT reset in init()
 
+  // sitting reminder screen widgets + state
+  lv_obj_t*   sitScreen;
+  lv_obj_t*   sitArc;
+  lv_obj_t*   sitTimeLabel;
+  lv_obj_t*   sitHintLabel;
+  lv_obj_t*   sitBtnLabel;
+  lv_obj_t*   sitChoiceBtns[4];
+  lv_obj_t*   sitScreenOffBtn;   // visible only mid-session (not during alert)
+  bool        sitRunning;
+  bool        sitAlerting;
+  uint8_t     sitIntervalMin;
+  uint32_t    sitStartMs;
+  uint32_t    sitLastChimeMs;
+  lv_timer_t* sitClockTimer;
+  void sitMarkChoice();
+  void sitEnterAlert();
+  void sitAckMoved();
+  void sitStop();
+  void sitUpdateAux();  // choice row vs screen-off button visibility
+
   // clean-room screen widgets + state
   lv_obj_t*   cleanScreen;
   lv_obj_t*   cleanArc;
@@ -349,6 +396,7 @@ private:
   lv_obj_t*  pushScreen;
   lv_obj_t*  pushRepLabel;
   lv_obj_t*  pushHintLabel;
+  lv_obj_t*  pushStartBtn;          // hidden while a session runs (BOOT ends it)
   lv_obj_t*  pushBtnLabel;
   int        pushReps;
   bool       pushRunning;
@@ -380,6 +428,7 @@ private:
   uint32_t   walkSteps;
   bool       walkSensorOk;
   PocketModeCB pocketCB = nullptr;  // deliberately NOT reset in init()
+  ScreenPowerCB screenPowerCB = nullptr;  // deliberately NOT reset in init()
 
   // manual-sync state (press & hold + overlay)
   uint32_t   lastGestureMs;  // swipes also emit clicks on release; used to filter them out
@@ -425,6 +474,7 @@ private:
   void buildBackScreen();
   void buildPullupScreen();
   void buildCleanScreen();
+  void buildSitScreen();
   void buildQuakeScreen();
   void buildSettingsScreen();
   void applySettingsVisuals();  // sync widgets + pet bg to devSettings
@@ -453,6 +503,11 @@ private:
   static void cleanBtnCB(lv_event_t* e);
   static void cleanGestureCB(lv_event_t* e);
   static void cleanClockCB(lv_timer_t* t);
+  static void sitBtnCB(lv_event_t* e);
+  static void sitChoiceCB(lv_event_t* e);
+  static void sitTapCB(lv_event_t* e);
+  static void sitGestureCB(lv_event_t* e);
+  static void sitClockCB(lv_timer_t* t);
   static void pomGuiltRevertCB(lv_timer_t* t);
   static void sedentaryCheckCB(lv_timer_t* t);
 

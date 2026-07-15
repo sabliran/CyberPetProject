@@ -506,6 +506,11 @@ static void petSoundCB(int event) {
       else if (t == 2) playTone(784.0f, 70, 0.1f * v);
       else             playTone(1046.5f, 60, 0.1f * v);
       break;
+    case SOUND_MOVE_ALERT:        // stand-up nag: insistent, same in all themes
+      playTone(880.0f, 160, 0.7f * v);
+      playTone(1174.7f, 160, 0.7f * v);
+      playTone(880.0f, 240, 0.7f * v);
+      break;
   }
 }
 
@@ -600,6 +605,7 @@ static uint32_t lastDailyCheck = 0;
 static const uint32_t DAY_MS   = 24UL * 60UL * 60UL * 1000UL;
 
 uint32_t lastSyncAttempt  = 0;
+uint32_t lastSyncOkMs     = 0;  // last successful sync (settings-screen WiFi status)
 const uint32_t SYNC_INTERVAL_MS     = 60UL * 1000UL;
 const uint32_t SYNC_INTERVAL_USB_MS = 10UL * 1000UL;  // faster cadence when docked over USB
 static int lastXpResetToken = 0;  // last dashboard XP-reset applied (NVS-backed)
@@ -639,35 +645,51 @@ static void pocketModeCB() {
   Serial.println("pocket mode ON (BOOT to wake)");
 }
 
+// Sit app display power: screen dark while the sit timer runs (battery),
+// woken by BOOT or by the stand-up alert itself. Touch is suppressed while
+// dark (see touchReadCB) so desk bumps can't tap buttons blind.
+static bool sitDisplayOff = false;
+
+static void sitScreenPowerCB(bool on) {
+  sitDisplayOff = !on;
+  gfx->setBrightness(on ? devCfg.brightness : 0);
+  if (on) lv_disp_trig_activity(NULL);
+  Serial.println(on ? "sit: display on" : "sit: display off (BOOT wakes)");
+}
+
 // Settings screen: persist + apply the hardware-facing knobs. Brightness
 // lands live (slider preview); volume/theme/sleep are read at use time.
 static void settingsChangedCB(const DeviceSettings& s) {
   devCfg = s;
   storage.saveDeviceSettings(s);
-  if (!pocketMode) gfx->setBrightness(devCfg.brightness);
+  if (!pocketMode && !sitDisplayOff) gfx->setBrightness(devCfg.brightness);
 }
 
 static void touchReadCB(lv_indev_drv_t* indev, lv_indev_data_t* data) {
   // The CST92xx pulses TP_INT on every scan while touched, including a final
   // report with zero points on release — same read pattern as Waveshare's demo.
   static int16_t tx[5], ty[5];
-  if (pocketMode) {
-    // Fabric brushing the glass must not tap anything. The controller still
-    // scans (its INT keeps firing); we just never report presses to LVGL.
+  if (pocketMode || sitDisplayOff) {
+    // Fabric brushing the glass (or a desk bump on a dark sit-mode screen)
+    // must not tap anything. The controller still scans; we just never
+    // report presses to LVGL.
     touchPressed = false;
     data->state = LV_INDEV_STATE_RELEASED;
     return;
   }
-  if (touchPressed) {
-    uint8_t touched = touch.getPoint(tx, ty, touch.getSupportTouchPoint());
-    if (touched) {
-      touchPressed = false;
-      data->state   = LV_INDEV_STATE_PRESSED;
-      data->point.x = tx[0];
-      data->point.y = ty[0];
-    } else {
-      data->state = LV_INDEV_STATE_RELEASED;
-    }
+  // Poll unconditionally on every read tick (30 ms). This used to be gated
+  // on the TP_INT interrupt flag, but the INT line can come out of a
+  // deep-sleep wake dead (July 2026, twice: device syncing happily, touch
+  // gone until a hard reset) — and a dead INT gate means touch is lost for
+  // good. The poll is a ~0.3 ms I2C read; against a lit AMOLED it's noise.
+  touchPressed = false;
+  uint8_t touched = touch.getPoint(tx, ty, touch.getSupportTouchPoint());
+  if (touched) {
+    data->state   = LV_INDEV_STATE_PRESSED;
+    data->point.x = tx[0];
+    data->point.y = ty[0];
+  } else {
+    data->state = LV_INDEV_STATE_RELEASED;
   }
 }
 
@@ -787,6 +809,11 @@ void setup() {
     // record survives battery-time crashes nobody was listening to.
     bool prevWake = false;
     uint8_t prevStage = storage.loadBootStage(&prevWake);
+    // Always name how far the previous boot got — a "stuck but not crashed"
+    // report (stage 0 = it was running loop()) is evidence too, and this
+    // line costs nothing.
+    Serial.printf("boot: previous boot reached stage %u (%s boot)\n",
+                  prevStage, prevWake ? "wake" : "cold");
     if (rr == ESP_RST_PANIC || rr == ESP_RST_INT_WDT || rr == ESP_RST_TASK_WDT ||
         rr == ESP_RST_WDT || rr == ESP_RST_BROWNOUT) {
       BootAnomaly a = storage.loadBootAnomaly();
@@ -831,6 +858,11 @@ void setup() {
                                     // disp_drv.rotated transforms pointer
                                     // input itself; flipping here too would
                                     // double-flip (inverted swipes)
+    // Explicit pad config: after a deep-sleep wake rtc_gpio_deinit hands the
+    // pin back with the input path in an undefined state, and attachInterrupt
+    // alone doesn't reconfigure it. (Touch reads no longer depend on this INT
+    // — see touchReadCB — it only wakes the tap-to-wake path and costs nothing.)
+    pinMode(TP_INT, INPUT_PULLUP);
     attachInterrupt(TP_INT, []() { touchPressed = true; }, FALLING);
   }
 
@@ -996,6 +1028,7 @@ void setup() {
   ui.setSoundCallback(petSoundCB);
   ui.setSleepCallback(sleepLogCB);
   ui.setPocketModeCallback(pocketModeCB);
+  ui.setScreenPowerCallback(sitScreenPowerCB);
   ui.setSettingsCallback(settingsChangedCB);
   devCfg = storage.loadDeviceSettings();
   ui.setDeviceSettings(devCfg);           // also re-applies the pet background
@@ -1250,7 +1283,9 @@ void loop() {
         lastConfigCheck = millis();
         if (wifiSync.checkConfig(&pet, &habits)) applySyncResults();
       }
-      if (millis() - lastSseConnectAttempt > 5000) {
+      // 15 s between attempts (was 5): with the 1 s connect cap that bounds
+      // SSE's worst-case loop-blocking to ~7% when the host is unreachable.
+      if (millis() - lastSseConnectAttempt > 15000) {
         lastSseConnectAttempt = millis();
         wifiSync.beginEventStream();
       }
@@ -1264,7 +1299,38 @@ void loop() {
   if ((strlen(WIFI_SSID) > 0 || wifiSync.usbAvailable()) &&
       millis() - lastSyncAttempt > syncInterval) {
     lastSyncAttempt = millis();
-    if (wifiSync.sync(&pet, &habits)) applySyncResults();
+    if (wifiSync.sync(&pet, &habits)) {
+      applySyncResults();
+      lastSyncOkMs = millis();
+    }
+  }
+
+  // ── WiFi status line (settings screen) ────────────────────────────────────
+  // "Is it connected?" at a glance: link + IP on the first line, dashboard
+  // reachability on the second (live SSE, last successful sync age, or none).
+  {
+    static uint32_t lastWifiStatusPush = 0;
+    if (millis() - lastWifiStatusPush > 3000) {
+      lastWifiStatusPush = millis();
+      char text[80];
+      bool up = wifiSync.isConnected();
+      char dash[40];
+      if (wifiSync.isEventStreamConnected())
+        snprintf(dash, sizeof(dash), "dashboard live");
+      else if (lastSyncOkMs != 0)
+        snprintf(dash, sizeof(dash), "synced %lus ago",
+                 (unsigned long)((millis() - lastSyncOkMs) / 1000));
+      else
+        snprintf(dash, sizeof(dash), "no sync yet");
+      if (strlen(WIFI_SSID) == 0)
+        snprintf(text, sizeof(text), "WiFi off (no credentials)\n%s", dash);
+      else if (up)
+        snprintf(text, sizeof(text), "%s  %s\n%s", WIFI_SSID,
+                 WiFi.localIP().toString().c_str(), dash);
+      else
+        snprintf(text, sizeof(text), "%s  not connected\n%s", WIFI_SSID, dash);
+      ui.setWifiStatus(up, text);
+    }
   }
 
   // ── Heap telemetry (visible in the USB bridge log) ────────────────────────
@@ -1459,6 +1525,7 @@ void loop() {
       uint32_t dimMs   = sleepMs * 3 / 4;
       bool inhibited = pocketMode || ui.isFocusRunning() || ui.isBackRunning() ||
                        ui.isPullupRunning() || ui.isCleanRunning() ||
+                       ui.isSitRunning() ||  // a deep-sleeping device can't nag you to stand
                        ui.isQuakeArmed() || capPending ||
                        (pmuOk && power.isVbusIn()) ||
                        (swLastStepMs != 0 && millis() - swLastStepMs < sleepMs);
@@ -1506,6 +1573,13 @@ void loop() {
           gfx->setBrightness(devCfg.brightness);
           ui.showWalkScreen();
           Serial.println("pocket mode OFF");
+        } else if (sitDisplayOff) {
+          // Sit mode with the screen dark: BOOT just relights it.
+          sitScreenPowerCB(true);
+        } else if (ui.isPushRunning()) {
+          // Push-up session: BOOT is the DONE button (no on-screen DONE —
+          // mid-push-up the nose counter made it a mis-tap hazard).
+          ui.finishPushSession();
         } else {
           ui.showAppsMenu();
         }

@@ -33,6 +33,15 @@ void WifiSync::kickReconnect() {
 // stable hostname (e.g. http://omarchy.local:8090) instead of a DHCP IP
 // that changes. Non-.local URLs pass through untouched.
 void WifiSync::resolveServerUrl() {
+  // Rate-limited: the mDNS query below blocks, and this runs from loop
+  // context on every reconnect edge and HTTP failure. A flapping link plus
+  // an unreachable host must not become a UI freeze — the July 2026 "frozen
+  // picture, touch dead" incidents were exactly this: the loop starved by
+  // back-to-back blocking network calls (syncs still trickled through, no
+  // crash record). Everything here is now bounded and rate-limited.
+  if (lastResolveMs != 0 && millis() - lastResolveMs < 60000UL) return;
+  lastResolveMs = millis();
+
   String url = serverUrlConfigured;
   String scheme = "http://";
   if (url.startsWith("http://"))       url.remove(0, 7);
@@ -52,13 +61,27 @@ void WifiSync::resolveServerUrl() {
     if (!mdnsStarted) { Serial.println("mDNS: init failed"); return; }
   }
   String name = host.substring(0, host.length() - 6);  // strip ".local"
-  IPAddress ip = MDNS.queryHost(name);                 // blocking, ~2 s on miss
+  IPAddress ip = MDNS.queryHost(name, 500);            // bounded (default is a 2 s block on miss)
   if (ip == IPAddress()) {
     Serial.println("mDNS: could not resolve " + host + " (keeping previous URL)");
     return;  // keep whatever serverUrl already holds
   }
   serverUrl = scheme + ip.toString() + port;
   Serial.println("mDNS: " + host + " -> " + ip.toString());
+}
+
+// True when serverUrl can be dialed without a DNS lookup of a *.local name.
+// lwip's plain-DNS resolver can't see mDNS names: depending on the router a
+// .local query fails slowly (multi-second, on every single attempt — the
+// July 2026 recurring UI freezes, round two: setConnectTimeout bounds the
+// TCP phase but NOT the DNS lookup before it). Until mDNS actually resolves
+// the host there is no point dialing at all; the resolve retry inside is
+// rate-limited (60 s) and bounded (500 ms), so an absent host costs the
+// loop almost nothing.
+bool WifiSync::serverUrlUsable() {
+  if (serverUrl.indexOf(".local") < 0) return true;
+  resolveServerUrl();  // rate-limited internally; rewrites serverUrl on success
+  return serverUrl.indexOf(".local") < 0;
 }
 
 bool WifiSync::isConnected() {
@@ -77,8 +100,9 @@ bool WifiSync::isConnected() {
 }
 
 bool WifiSync::postMotionLog(const char* label, const uint16_t* samples, int count, int rateHz) {
-  if (!isConnected() || count <= 0) return false;
+  if (!isConnected() || !serverUrlUsable() || count <= 0) return false;
   HTTPClient http;
+  http.setConnectTimeout(2000);  // bounded — runs from loop()
   // Raw binary straight from the caller's buffer: a JSON body for thousands
   // of samples would need a ~40 KB String this heap can't afford.
   http.begin(serverUrl + "/api/motionlog?label=" + label + "&rate=" + String(rateHz));
@@ -193,9 +217,11 @@ bool WifiSync::sync(Pet* pet, HabitTracker* tracker) {
     // No bridge answered (or bad response) — fall through to WiFi.
   }
 
-  if (!isConnected()) return false;
+  if (!isConnected() || !serverUrlUsable()) return false;
 
   HTTPClient http;
+  http.setConnectTimeout(2000);  // default 5 s would stall the UI per attempt
+  http.setTimeout(3000);
   http.begin(serverUrl + "/api/sync");
   http.addHeader("Content-Type", "application/json");
 
@@ -377,7 +403,7 @@ bool WifiSync::applySyncResponse(const String& response, Pet* pet, HabitTracker*
 }
 
 bool WifiSync::beginEventStream() {
-  if (!isConnected()) return false;
+  if (!isConnected() || !serverUrlUsable()) return false;
 
   // Parse host + port from serverUrl ("http://HOST:PORT")
   String url = serverUrl;
@@ -391,7 +417,9 @@ bool WifiSync::beginEventStream() {
   sseConnected = false;
   sseLineBuf   = "";
 
-  if (!sseClient.connect(host.c_str(), port)) {
+  // 1 s connect cap: the default (~3 s) block, retried from loop(), is a
+  // big slice of the UI-freeze budget when the host is unreachable.
+  if (!sseClient.connect(host.c_str(), port, 1000)) {
     Serial.println("SSE: TCP connect failed");
     return false;
   }
@@ -463,9 +491,11 @@ bool WifiSync::pollEventStream(Pet* pet, HabitTracker* tracker) {
 }
 
 bool WifiSync::checkConfig(Pet* pet, HabitTracker* tracker) {
-  if (!isConnected()) return false;
+  if (!isConnected() || !serverUrlUsable()) return false;
 
   HTTPClient http;
+  http.setConnectTimeout(2000);  // bounded — runs from loop()
+  http.setTimeout(3000);
   http.begin(serverUrl + "/api/config-version");
   int httpCode = http.GET();
   if (httpCode != 200) {
