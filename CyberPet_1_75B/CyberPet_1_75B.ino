@@ -100,7 +100,6 @@ extern PetUI ui;  // defined below with the other globals; the swing detector ne
 static const int  CAP_MAX = 16384;      // ~4 min at the sampler's ~66 Hz
 static uint16_t*  capBuf  = nullptr;    // ps_malloc'd on first session
 static int        capLen  = 0;
-static bool       quakeCapReady = false;  // set by the quake detector at event end
 
 static void swStepSample() {
   uint32_t nowMs = millis();
@@ -268,84 +267,6 @@ static void swStepSample() {
     pullLastRepMs = 0;
   }
 
-  // Quake watch: classic STA/LTA seismic trigger on d = ||a|-1g|. The short
-  // average (~0.5 s) must exceed a multiple of the long average (~30 s
-  // baseline, frozen while excited so an event can't eat its own reference)
-  // continuously for 1.2 s — bumps and door slams die out in milliseconds
-  // and never qualify; real shaking sustains. Honest scope: a MEMS accel on
-  // a table detects quakes you can already feel (roughly MMI IV+ locally),
-  // not weak distant ones — this is a watchdog, not early warning. Events
-  // are recorded (3 s pre-trigger ring + the event itself) and shipped to
-  // the Motion Lab like workout captures.
-  static const uint32_t QK_SUSTAIN_MS   = 1200;
-  static const uint32_t QK_CALM_MS      = 3000;
-  static const int      QK_PRE          = 200;    // ~3 s pre-trigger context
-  static float    qkSta = 0, qkLta = 0.003f;
-  static uint32_t qkHighSince = 0, qkCalmSince = 0;
-  static bool     qkEvent = false;
-  static float    qkPeak = 0;
-  static uint16_t qkPre[QK_PRE];
-  static int      qkPreIdx = 0, qkPreCnt = 0;
-  static int      qkThrottle = 0;
-  if (ui.isQuakeArmed()) {
-    float d = fabsf(mag - 1.0f);
-    qkSta += 0.03f  * (d - qkSta);                    // ~0.5 s EMA at 66 Hz
-    float trig = 4.0f * qkLta + 0.006f;
-    if (!qkEvent && qkSta < trig)
-      qkLta += 0.0005f * (d - qkLta);                 // ~30 s EMA, gated
-    if (qkLta < 0.0015f) qkLta = 0.0015f;             // sensor noise floor
-
-    uint16_t mg = (uint16_t)(d * 1000.0f > 65535.0f ? 65535 : d * 1000.0f);
-    qkPre[qkPreIdx] = mg;
-    qkPreIdx = (qkPreIdx + 1) % QK_PRE;
-    if (qkPreCnt < QK_PRE) qkPreCnt++;
-
-    if (++qkThrottle >= 3) {                          // ~22 Hz to the chart
-      qkThrottle = 0;
-      ui.pushQuakeSample((int)((mag - 1.0f) * 1000.0f));
-    }
-
-    if (!qkEvent) {
-      if (qkSta > trig) {
-        if (qkHighSince == 0) qkHighSince = nowMs;
-        if (nowMs - qkHighSince >= QK_SUSTAIN_MS) {
-          qkEvent = true;
-          qkPeak = 0;
-          qkCalmSince = 0;
-          // start the event recording with the pre-trigger ring
-          if (!capBuf) capBuf = (uint16_t*)ps_malloc(CAP_MAX * sizeof(uint16_t));
-          capLen = 0;
-          if (capBuf)
-            for (int i = 0; i < qkPreCnt; i++)
-              capBuf[capLen++] = qkPre[(qkPreIdx + i + QK_PRE - qkPreCnt) % QK_PRE];
-          ui.quakeTriggered();
-          Serial.println("quake: TRIGGERED");
-        }
-      } else {
-        qkHighSince = 0;
-      }
-    } else {
-      if (d > qkPeak) qkPeak = d;
-      if (capBuf && capLen < CAP_MAX) capBuf[capLen++] = mg;
-      if (qkSta < 2.0f * qkLta + 0.003f) {
-        if (qkCalmSince == 0) qkCalmSince = nowMs;
-        if (nowMs - qkCalmSince >= QK_CALM_MS) {
-          qkEvent = false;
-          qkHighSince = 0;
-          ui.quakeCalm((int)(qkPeak * 1000.0f));
-          quakeCapReady = true;   // loop ships the recording
-          Serial.printf("quake: calm, peak %d mg, %d samples\n",
-                        (int)(qkPeak * 1000.0f), capLen);
-        }
-      } else {
-        qkCalmSince = 0;
-      }
-    }
-  } else {
-    qkSta = 0; qkLta = 0.003f;
-    qkHighSince = 0; qkCalmSince = 0;
-    qkEvent = false; qkPreCnt = 0; qkPreIdx = 0;
-  }
 }
 
 // Direct register read, bypassing SensorLib — ground truth for debugging
@@ -469,19 +390,11 @@ static void playTone(float freqHz, int ms, float vol) {
 }
 
 // Registered with the UI layer (see PetSoundEvent in ui.h). Master volume
-// and sound theme come from the settings screen; the quake siren
-// deliberately ignores volume — an alarm you can accidentally mute isn't
-// an alarm. Themes: 0 classic (original chirps), 1 arcade (fast bright
-// arpeggios), 2 soft (lower, gentler, quieter).
+// and sound theme come from the settings screen. Themes: 0 classic
+// (original chirps), 1 arcade (fast bright arpeggios), 2 soft (lower,
+// gentler, quieter).
 static void petSoundCB(int event) {
   if (!audioOk) return;
-  if (event == SOUND_QUAKE) {     // loud two-tone siren, three cycles
-    for (int i = 0; i < 3; i++) {
-      playTone(1318.5f, 120, 0.9f);
-      playTone(659.3f, 120, 0.9f);
-    }
-    return;
-  }
   float v = devCfg.volumePct / 100.0f;
   if (v <= 0.0f) return;
   int t = devCfg.soundTheme;
@@ -643,6 +556,17 @@ static void pocketModeCB() {
   touchPressed = false;   // drop any in-flight touch report
   gfx->setBrightness(0);  // AMOLED: black pixels + no backlight ≈ display off
   Serial.println("pocket mode ON (BOOT to wake)");
+}
+
+// Settings-screen restart (after the yes/no confirm): flush the lazily-saved
+// state, then reboot. Same save set as the OTA prelude.
+static void restartCB() {
+  Serial.println("settings: user-requested restart");
+  Serial.flush();
+  storage.savePet(pet.getState());
+  storage.saveHabits(habits);
+  storage.saveStepState(stepState);
+  ESP.restart();  // never returns
 }
 
 // Sit app display power: screen dark while the sit timer runs (battery),
@@ -1029,6 +953,7 @@ void setup() {
   ui.setSleepCallback(sleepLogCB);
   ui.setPocketModeCallback(pocketModeCB);
   ui.setScreenPowerCallback(sitScreenPowerCB);
+  ui.setRestartCallback(restartCB);
   ui.setSettingsCallback(settingsChangedCB);
   devCfg = storage.loadDeviceSettings();
   ui.setDeviceSettings(devCfg);           // also re-applies the pet background
@@ -1476,17 +1401,6 @@ void loop() {
     static uint32_t    capLastTry    = 0;
     static const char* capLabel      = "pullup";
     bool running = ui.isPullupRunning() || ui.isBackRunning();
-    if (quakeCapReady) {
-      // Quake events reuse the same shipping path with their own label.
-      quakeCapReady = false;
-      if (capLen > 0) {
-        capLabel = "quake";
-        capPending = true;
-        capPendingSince = millis();
-        capLastTry = 0;
-        Serial.printf("motionlog: quake event, %d samples queued\n", capLen);
-      }
-    }
     if (running && !wasCapRunning) {
       if (!capBuf) capBuf = (uint16_t*)ps_malloc(CAP_MAX * sizeof(uint16_t));
       capLen = 0;
@@ -1526,7 +1440,7 @@ void loop() {
       bool inhibited = pocketMode || ui.isFocusRunning() || ui.isBackRunning() ||
                        ui.isPullupRunning() || ui.isCleanRunning() ||
                        ui.isSitRunning() ||  // a deep-sleeping device can't nag you to stand
-                       ui.isQuakeArmed() || capPending ||
+                       capPending ||
                        (pmuOk && power.isVbusIn()) ||
                        (swLastStepMs != 0 && millis() - swLastStepMs < sleepMs);
       if (inhibited || idle < dimMs) {

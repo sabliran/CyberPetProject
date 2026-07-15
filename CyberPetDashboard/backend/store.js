@@ -214,12 +214,29 @@ function readFromDb(db) {
     configUpdatedAt: kvGet(db, 'configUpdatedAt', null),
     settings:        kvGet(db, 'settings',        DEFAULT_DATA.settings),
     petState:        kvGet(db, 'petState',        DEFAULT_DATA.petState),
+    // Device-analytics fields. These were FORGOTTEN in the July 2026 SQLite
+    // migration: server.js kept writing them onto the in-memory object, but
+    // they never reached the kv table, so every container restart wiped
+    // step/sleep/workout history (the session counters silently re-credited
+    // the device's lifetime totals to "today" after each restart).
+    stepHistory:     kvGet(db, 'stepHistory',     {}),
+    sleepHistory:    kvGet(db, 'sleepHistory',    {}),
+    backHistory:     kvGet(db, 'backHistory',     {}),
+    pushHistory:     kvGet(db, 'pushHistory',     {}),
+    pullupHistory:   kvGet(db, 'pullupHistory',   {}),
+    focusHistory:    kvGet(db, 'focusHistory',    {}),
+    backSessions:    kvGet(db, 'backSessions',    0),
+    pushSessions:    kvGet(db, 'pushSessions',    0),
+    pullupSessions:  kvGet(db, 'pullupSessions',  0),
+    focusSessions:   kvGet(db, 'focusSessions',   0),
   };
 }
 
 const KV_KEYS = [
   'devNotes', 'nextHabitId', 'nextGoalId', 'nextQuestId', 'nextTodoId',
-  'nextLogId', 'dashXpTotal', 'configVersion', 'configUpdatedAt', 'settings', 'petState'
+  'nextLogId', 'dashXpTotal', 'configVersion', 'configUpdatedAt', 'settings', 'petState',
+  'stepHistory', 'sleepHistory', 'backHistory', 'pushHistory', 'pullupHistory',
+  'focusHistory', 'backSessions', 'pushSessions', 'pullupSessions', 'focusSessions'
 ];
 
 function writeToDb(db, data) {

@@ -168,7 +168,6 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   cleanRunning = false; cleanStartMs = 0; cleanClockTimer = nullptr;
   sitRunning = false; sitAlerting = false; sitIntervalMin = 20;
   sitStartMs = 0; sitLastChimeMs = 0; sitClockTimer = nullptr;
-  quakeArmed = false; quakeEvents = 0;
   devSettings = { 100, 0, 200, 0, 2 };  // volume, theme, brightness, bg, sleep-min
   pushReps = 0; pushRunning = false; lastPushTapMs = 0;
   sleepLogged = false; sleepQuality = 0;
@@ -185,7 +184,6 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   buildPullupScreen();
   buildCleanScreen();
   buildSitScreen();
-  buildQuakeScreen();
   buildSettingsScreen();
   buildPushScreen();
   buildTrophyScreen();
@@ -1490,7 +1488,6 @@ static const AppEntry APP_ENTRIES[] = {
   { LV_SYMBOL_DOWN,      "push-ups", 0xF06090 },
   { LV_SYMBOL_UP,        "pull-ups", 0x60D080 },
   { LV_SYMBOL_EYE_CLOSE, "sleep",    0xA080FF },
-  { LV_SYMBOL_WARNING,   "quake",    0xE05060 },
   { LV_SYMBOL_HOME,      "clean room", 0xE8B040 },
   { LV_SYMBOL_BELL,      "sit",      0x40C8D8 },
   { LV_SYMBOL_OK,        "trophies", 0xFFD060 },
@@ -1587,15 +1584,12 @@ void PetUI::appsBtnCB(lv_event_t* e) {
       self->showSleepScreen();
       break;
     case 5:
-      self->showQuakeScreen();
-      break;
-    case 6:
       self->showCleanScreen();
       break;
-    case 7:
+    case 6:
       self->showSitScreen();
       break;
-    case 8:
+    case 7:
       self->showTrophyScreen();
       break;
     default:
@@ -1604,6 +1598,18 @@ void PetUI::appsBtnCB(lv_event_t* e) {
 }
 
 /* ---- push-up screen -------------------------------------------------- */
+
+void PetUI::setWorkoutReward(lv_obj_t* lbl, int xp, bool pushBonus) {
+  int d = pet->getSettings().difficulty;
+  if (d < 0) d = 0;
+  if (d > 2) d = 2;
+  if (pushBonus)
+    lv_label_set_text_fmt(lbl, "gives: +%d xp, snack +%d food +%d mood\n%d+ reps: double snack",
+                          xp, DIFF_MEAL_HUNGER[d], DIFF_MEAL_MOOD[d], PUSH_BONUS_REPS);
+  else
+    lv_label_set_text_fmt(lbl, "gives: +%d xp, snack +%d food +%d mood",
+                          xp, DIFF_MEAL_HUNGER[d], DIFF_MEAL_MOOD[d]);
+}
 
 void PetUI::buildPushScreen() {
   pushScreen = lv_obj_create(NULL);
@@ -1616,6 +1622,12 @@ void PetUI::buildPushScreen() {
   lv_label_set_text(title, "PUSH-UPS");
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
   lv_obj_set_style_text_color(title, lv_color_hex(0xF06090), 0);
+
+  pushRewardLabel = lv_label_create(pushScreen);
+  lv_obj_set_style_text_font(pushRewardLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(pushRewardLabel, lv_color_hex(0x6A2A40), 0);
+  lv_obj_set_style_text_align(pushRewardLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(pushRewardLabel, LV_ALIGN_TOP_MID, 0, 56);
 
   pushRepLabel = lv_label_create(pushScreen);
   lv_label_set_text(pushRepLabel, "0");
@@ -1662,6 +1674,7 @@ void PetUI::buildPushScreen() {
 void PetUI::showPushScreen() {
   pushReps = 0;
   pushRunning = false;
+  setWorkoutReward(pushRewardLabel, PUSH_XP, true);
   lv_label_set_text(pushRepLabel, "0");
   lv_label_set_text(pushHintLabel, "put it under you, press START");
   lv_obj_clear_flag(pushStartBtn, LV_OBJ_FLAG_HIDDEN);
@@ -1707,9 +1720,13 @@ void PetUI::finishPushSession() {
   lv_obj_clear_flag(pushStartBtn, LV_OBJ_FLAG_HIDDEN);
   if (pushReps >= PUSH_TARGET_REPS) {
     pet->feedWorkout();  // meal size scales with dashboard difficulty
+    if (pushReps >= PUSH_BONUS_REPS) pet->feedWorkout();  // 15+ = double snack
     pet->addXP(PUSH_XP);
     refreshPetScreen();
-    lv_label_set_text_fmt(pushHintLabel, "fed Koko  +%d xp", PUSH_XP);
+    if (pushReps >= PUSH_BONUS_REPS)
+      lv_label_set_text_fmt(pushHintLabel, "beast! DOUBLE snack  +%d xp", PUSH_XP);
+    else
+      lv_label_set_text_fmt(pushHintLabel, "fed Koko  +%d xp", PUSH_XP);
     if (soundCB) soundCB(SOUND_HABIT_DONE);
     if (pushDoneCB) pushDoneCB();
     lv_timer_t* t = lv_timer_create(pushDoneTimerCB, 1200, this);
@@ -1744,6 +1761,12 @@ void PetUI::buildBackScreen() {
   lv_label_set_text(title, "BACK WORKOUT");
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
   lv_obj_set_style_text_color(title, lv_color_hex(0xFFA050), 0);
+
+  backRewardLabel = lv_label_create(backScreen);
+  lv_obj_set_style_text_font(backRewardLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(backRewardLabel, lv_color_hex(0x6A4520), 0);
+  lv_obj_set_style_text_align(backRewardLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(backRewardLabel, LV_ALIGN_TOP_MID, 0, 58);
 
   backRepLabel = lv_label_create(backScreen);
   lv_label_set_text(backRepLabel, "0");
@@ -1782,6 +1805,7 @@ void PetUI::buildBackScreen() {
 void PetUI::showBackScreen() {
   backReps = 0;
   backRunning = false;
+  setWorkoutReward(backRewardLabel, BACK_XP, false);
   lv_label_set_text(backRepLabel, "0");
   lv_label_set_text(backHintLabel, "hold Koko, press START");
   lv_label_set_text(backBtnLabel, LV_SYMBOL_PLAY "  START");
@@ -1853,6 +1877,12 @@ void PetUI::buildPullupScreen() {
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
   lv_obj_set_style_text_color(title, lv_color_hex(0x60D080), 0);
 
+  pullupRewardLabel = lv_label_create(pullupScreen);
+  lv_obj_set_style_text_font(pullupRewardLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(pullupRewardLabel, lv_color_hex(0x2A6A40), 0);
+  lv_obj_set_style_text_align(pullupRewardLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(pullupRewardLabel, LV_ALIGN_TOP_MID, 0, 58);
+
   pullupRepLabel = lv_label_create(pullupScreen);
   lv_label_set_text(pullupRepLabel, "0");
   lv_obj_set_style_text_font(pullupRepLabel, &lv_font_montserrat_32, 0);
@@ -1890,6 +1920,7 @@ void PetUI::buildPullupScreen() {
 void PetUI::showPullupScreen() {
   pullupReps = 0;
   pullupRunning = false;
+  setWorkoutReward(pullupRewardLabel, PULLUP_XP, false);
   lv_label_set_text(pullupRepLabel, "0");
   lv_label_set_text(pullupHintLabel, "Koko in pocket, press START");
   lv_label_set_text(pullupBtnLabel, LV_SYMBOL_PLAY "  START");
@@ -2008,6 +2039,12 @@ void PetUI::buildCleanScreen() {
   lv_obj_set_style_text_color(cleanBtnLabel, lv_color_hex(0xE8B040), 0);
   lv_obj_center(cleanBtnLabel);
   lv_obj_add_event_cb(btn, cleanBtnCB, LV_EVENT_CLICKED, this);
+
+  lv_obj_t* reward = lv_label_create(cleanScreen);
+  lv_label_set_text(reward, "gives: +15 xp");
+  lv_obj_set_style_text_font(reward, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(reward, lv_color_hex(0x6A5520), 0);
+  lv_obj_align(reward, LV_ALIGN_CENTER, 0, 112);
 
   lv_obj_t* hint = lv_label_create(cleanScreen);
   lv_label_set_text(hint, "swipe to close");
@@ -2143,7 +2180,7 @@ void PetUI::buildSitScreen() {
   lv_obj_align(sitTimeLabel, LV_ALIGN_CENTER, 0, -46);
 
   sitHintLabel = lv_label_create(sitScreen);
-  lv_label_set_text(sitHintLabel, "sitting? I'll nag you to stand");
+  lv_label_set_text(sitHintLabel, "sitting? I'll nag you to stand\ngives: nothing - saves your back");
   lv_obj_set_style_text_color(sitHintLabel, lv_color_hex(0x1E6A74), 0);
   lv_obj_set_style_text_align(sitHintLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(sitHintLabel, LV_ALIGN_CENTER, 0, -4);
@@ -2240,7 +2277,7 @@ void PetUI::showSitScreen() {
   if (!sitRunning) {
     lv_arc_set_value(sitArc, 1000);
     lv_label_set_text_fmt(sitTimeLabel, "%02d:00", sitIntervalMin);
-    lv_label_set_text(sitHintLabel, "sitting? I'll nag you to stand");
+    lv_label_set_text(sitHintLabel, "sitting? I'll nag you to stand\ngives: nothing - saves your back");
     lv_label_set_text(sitBtnLabel, LV_SYMBOL_PLAY "  START");
   }
   sitMarkChoice();
@@ -2255,7 +2292,7 @@ void PetUI::sitStop() {
   lv_obj_set_style_bg_color(sitScreen, lv_color_hex(0x000000), 0);
   lv_arc_set_value(sitArc, 1000);
   lv_label_set_text_fmt(sitTimeLabel, "%02d:00", sitIntervalMin);
-  lv_label_set_text(sitHintLabel, "sitting? I'll nag you to stand");
+  lv_label_set_text(sitHintLabel, "sitting? I'll nag you to stand\ngives: nothing - saves your back");
   lv_label_set_text(sitBtnLabel, LV_SYMBOL_PLAY "  START");
   sitUpdateAux();
 }
@@ -2349,126 +2386,6 @@ void PetUI::sitGestureCB(lv_event_t* e) {
   self->lastGestureMs = lv_tick_get();
   lv_indev_wait_release(lv_indev_get_act());
   self->sitStop();
-  self->showPetScreen();
-}
-
-/* ---- quake watch screen ---------------------------------------------- */
-
-void PetUI::buildQuakeScreen() {
-  quakeScreen = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(quakeScreen, lv_color_hex(0x000000), 0);
-  lv_obj_clear_flag(quakeScreen, LV_OBJ_FLAG_SCROLLABLE);
-
-  lv_obj_t* title = lv_label_create(quakeScreen);
-  lv_label_set_text(title, "QUAKE WATCH");
-  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
-  lv_obj_set_style_text_color(title, lv_color_hex(0xE05060), 0);
-
-  quakeStatusLabel = lv_label_create(quakeScreen);
-  lv_label_set_text(quakeStatusLabel, "flat surface, press ARM");
-  lv_obj_set_style_text_color(quakeStatusLabel, lv_color_hex(0x8A8AA8), 0);
-  lv_obj_align(quakeStatusLabel, LV_ALIGN_CENTER, 0, -118);
-
-  // Live seismograph: signed |a|-1g deviation in mg, shifted left per sample.
-  quakeChart = lv_chart_create(quakeScreen);
-  lv_obj_set_size(quakeChart, 360, 140);
-  lv_obj_align(quakeChart, LV_ALIGN_CENTER, 0, -22);
-  lv_obj_set_style_bg_color(quakeChart, lv_color_hex(0x0A0A14), 0);
-  lv_obj_set_style_border_width(quakeChart, 0, 0);
-  lv_obj_set_style_size(quakeChart, 0, LV_PART_INDICATOR);  // no point dots
-  lv_chart_set_type(quakeChart, LV_CHART_TYPE_LINE);
-  lv_chart_set_point_count(quakeChart, 150);
-  lv_chart_set_range(quakeChart, LV_CHART_AXIS_PRIMARY_Y, -60, 60);
-  lv_chart_set_update_mode(quakeChart, LV_CHART_UPDATE_MODE_SHIFT);
-  lv_chart_set_div_line_count(quakeChart, 3, 0);
-  quakeSeries = lv_chart_add_series(quakeChart, lv_color_hex(0x50A8E8),
-                                    LV_CHART_AXIS_PRIMARY_Y);
-  lv_chart_set_all_value(quakeChart, quakeSeries, 0);
-
-  quakeStatsLabel = lv_label_create(quakeScreen);
-  lv_label_set_text(quakeStatsLabel, "events: 0");
-  lv_obj_set_style_text_color(quakeStatsLabel, lv_color_hex(0x4A4A66), 0);
-  lv_obj_align(quakeStatsLabel, LV_ALIGN_CENTER, 0, 66);
-
-  lv_obj_t* btn = lv_btn_create(quakeScreen);
-  lv_obj_set_size(btn, 240, 56);
-  lv_obj_align(btn, LV_ALIGN_CENTER, 0, 122);
-  lv_obj_set_style_bg_color(btn, lv_color_hex(0x200810), 0);
-  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(btn, 16, 0);
-  lv_obj_set_style_border_width(btn, 2, 0);
-  lv_obj_set_style_border_color(btn, lv_color_hex(0xE05060), 0);
-  quakeBtnLabel = lv_label_create(btn);
-  lv_label_set_text(quakeBtnLabel, LV_SYMBOL_PLAY "  ARM");
-  lv_obj_set_style_text_color(quakeBtnLabel, lv_color_hex(0xE05060), 0);
-  lv_obj_center(quakeBtnLabel);
-  lv_obj_add_event_cb(btn, quakeBtnCB, LV_EVENT_CLICKED, this);
-
-  lv_obj_t* hint = lv_label_create(quakeScreen);
-  lv_label_set_text(hint, "swipe to close");
-  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -34);
-  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
-  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
-
-  lv_obj_add_event_cb(quakeScreen, quakeGestureCB, LV_EVENT_GESTURE, this);
-}
-
-void PetUI::showQuakeScreen() {
-  quakeArmed = false;
-  quakeEvents = 0;
-  lv_label_set_text(quakeStatusLabel, "flat surface, press ARM");
-  lv_obj_set_style_text_color(quakeStatusLabel, lv_color_hex(0x8A8AA8), 0);
-  lv_label_set_text(quakeStatsLabel, "events: 0");
-  lv_label_set_text(quakeBtnLabel, LV_SYMBOL_PLAY "  ARM");
-  lv_obj_set_style_bg_color(quakeScreen, lv_color_hex(0x000000), 0);
-  lv_chart_set_all_value(quakeChart, quakeSeries, 0);
-  lv_scr_load_anim(quakeScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
-}
-
-void PetUI::pushQuakeSample(int devMilliG) {
-  if (!quakeArmed || lv_scr_act() != quakeScreen) return;
-  if (devMilliG > 60) devMilliG = 60;
-  if (devMilliG < -60) devMilliG = -60;
-  lv_chart_set_next_value(quakeChart, quakeSeries, devMilliG);
-}
-
-void PetUI::quakeTriggered() {
-  quakeEvents++;
-  lv_label_set_text(quakeStatusLabel, "!!  SHAKING DETECTED  !!");
-  lv_obj_set_style_text_color(quakeStatusLabel, lv_color_hex(0xFF4050), 0);
-  lv_obj_set_style_bg_color(quakeScreen, lv_color_hex(0x2A0410), 0);
-  if (soundCB) soundCB(SOUND_QUAKE);
-}
-
-void PetUI::quakeCalm(int peakMilliG) {
-  lv_label_set_text(quakeStatusLabel, "monitoring");
-  lv_obj_set_style_text_color(quakeStatusLabel, lv_color_hex(0x8A8AA8), 0);
-  lv_obj_set_style_bg_color(quakeScreen, lv_color_hex(0x000000), 0);
-  lv_label_set_text_fmt(quakeStatsLabel, "events: %d  ·  last peak %d mg",
-                        quakeEvents, peakMilliG);
-}
-
-void PetUI::quakeBtnCB(lv_event_t* e) {
-  PetUI* self = (PetUI*)lv_event_get_user_data(e);
-  if (lv_tick_get() - self->lastGestureMs < 600) return;
-  self->quakeArmed = !self->quakeArmed;
-  if (self->quakeArmed) {
-    lv_label_set_text(self->quakeStatusLabel, "monitoring");
-    lv_obj_set_style_text_color(self->quakeStatusLabel, lv_color_hex(0x8A8AA8), 0);
-    lv_label_set_text(self->quakeBtnLabel, LV_SYMBOL_STOP "  STOP");
-  } else {
-    lv_label_set_text(self->quakeStatusLabel, "flat surface, press ARM");
-    lv_label_set_text(self->quakeBtnLabel, LV_SYMBOL_PLAY "  ARM");
-    lv_obj_set_style_bg_color(self->quakeScreen, lv_color_hex(0x000000), 0);
-  }
-}
-
-void PetUI::quakeGestureCB(lv_event_t* e) {
-  // Any swipe disarms the watch and returns to the pet.
-  PetUI* self = (PetUI*)lv_event_get_user_data(e);
-  self->lastGestureMs = lv_tick_get();
-  lv_indev_wait_release(lv_indev_get_act());
-  self->quakeArmed = false;
   self->showPetScreen();
 }
 
@@ -2579,6 +2496,76 @@ void PetUI::buildSettingsScreen() {
   lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
   lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
 
+  // Restart button (top right of the title row): opens the yes/no modal.
+  {
+    lv_obj_t* rbtn = lv_btn_create(settingsScreen);
+    lv_obj_set_size(rbtn, 44, 36);
+    lv_obj_align(rbtn, LV_ALIGN_TOP_MID, 128, 52);
+    lv_obj_set_style_bg_color(rbtn, lv_color_hex(0x1A0A10), 0);
+    lv_obj_set_style_radius(rbtn, 10, 0);
+    lv_obj_set_style_border_width(rbtn, 2, 0);
+    lv_obj_set_style_border_color(rbtn, lv_color_hex(0xE05060), 0);
+    lv_obj_t* rlbl = lv_label_create(rbtn);
+    lv_label_set_text(rlbl, LV_SYMBOL_REFRESH);
+    lv_obj_set_style_text_color(rlbl, lv_color_hex(0xE05060), 0);
+    lv_obj_center(rlbl);
+    lv_obj_add_event_cb(rbtn, [](lv_event_t* e) {
+      PetUI* self = (PetUI*)lv_event_get_user_data(e);
+      if (lv_tick_get() - self->lastGestureMs < 600) return;
+      lv_obj_clear_flag(self->setRestartOverlay, LV_OBJ_FLAG_HIDDEN);
+    }, LV_EVENT_CLICKED, this);
+  }
+
+  // "Are you sure" modal: full-screen dim backdrop (swallows taps) + dialog.
+  setRestartOverlay = lv_obj_create(settingsScreen);
+  lv_obj_set_size(setRestartOverlay, 466, 466);
+  lv_obj_set_pos(setRestartOverlay, 0, 0);
+  lv_obj_set_style_bg_color(setRestartOverlay, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(setRestartOverlay, LV_OPA_80, 0);
+  lv_obj_set_style_border_width(setRestartOverlay, 0, 0);
+  lv_obj_set_style_radius(setRestartOverlay, 0, 0);
+  lv_obj_clear_flag(setRestartOverlay, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(setRestartOverlay, LV_OBJ_FLAG_CLICKABLE);  // block the screen behind
+  lv_obj_add_flag(setRestartOverlay, LV_OBJ_FLAG_HIDDEN);
+  {
+    lv_obj_t* q = lv_label_create(setRestartOverlay);
+    lv_label_set_text(q, "restart the device?");
+    lv_obj_set_style_text_color(q, lv_color_hex(0xE0E4F0), 0);
+    lv_obj_align(q, LV_ALIGN_CENTER, 0, -50);
+
+    lv_obj_t* yes = lv_btn_create(setRestartOverlay);
+    lv_obj_set_size(yes, 130, 52);
+    lv_obj_align(yes, LV_ALIGN_CENTER, -75, 30);
+    lv_obj_set_style_bg_color(yes, lv_color_hex(0x2A0A10), 0);
+    lv_obj_set_style_radius(yes, 14, 0);
+    lv_obj_set_style_border_width(yes, 2, 0);
+    lv_obj_set_style_border_color(yes, lv_color_hex(0xE05060), 0);
+    lv_obj_t* ylbl = lv_label_create(yes);
+    lv_label_set_text(ylbl, LV_SYMBOL_OK "  yes");
+    lv_obj_set_style_text_color(ylbl, lv_color_hex(0xE05060), 0);
+    lv_obj_center(ylbl);
+    lv_obj_add_event_cb(yes, [](lv_event_t* e) {
+      PetUI* self = (PetUI*)lv_event_get_user_data(e);
+      if (self->restartCB) self->restartCB();  // never returns (ESP.restart)
+    }, LV_EVENT_CLICKED, this);
+
+    lv_obj_t* no = lv_btn_create(setRestartOverlay);
+    lv_obj_set_size(no, 130, 52);
+    lv_obj_align(no, LV_ALIGN_CENTER, 75, 30);
+    lv_obj_set_style_bg_color(no, lv_color_hex(0x10101E), 0);
+    lv_obj_set_style_radius(no, 14, 0);
+    lv_obj_set_style_border_width(no, 2, 0);
+    lv_obj_set_style_border_color(no, lv_color_hex(0x8A9AB8), 0);
+    lv_obj_t* nlbl = lv_label_create(no);
+    lv_label_set_text(nlbl, LV_SYMBOL_CLOSE "  no");
+    lv_obj_set_style_text_color(nlbl, lv_color_hex(0x8A9AB8), 0);
+    lv_obj_center(nlbl);
+    lv_obj_add_event_cb(no, [](lv_event_t* e) {
+      PetUI* self = (PetUI*)lv_event_get_user_data(e);
+      lv_obj_add_flag(self->setRestartOverlay, LV_OBJ_FLAG_HIDDEN);
+    }, LV_EVENT_CLICKED, this);
+  }
+
   // WiFi + dashboard status (bottom): fed by the sketch via setWifiStatus.
   setWifiLabel = lv_label_create(settingsScreen);
   lv_obj_set_width(setWifiLabel, 320);
@@ -2587,6 +2574,9 @@ void PetUI::buildSettingsScreen() {
   lv_obj_set_style_text_color(setWifiLabel, lv_color_hex(0x5A6478), 0);
   lv_label_set_text(setWifiLabel, LV_SYMBOL_WIFI "  checking...");
   lv_obj_align(setWifiLabel, LV_ALIGN_TOP_MID, 0, 388);
+
+  // The modal must dim everything, including widgets created after it.
+  lv_obj_move_foreground(setRestartOverlay);
 
   lv_obj_add_event_cb(settingsScreen, settingsGestureCB, LV_EVENT_GESTURE, this);
 }
@@ -2636,6 +2626,7 @@ void PetUI::setDeviceSettings(const DeviceSettings& s) {
 
 void PetUI::showSettingsScreen() {
   applySettingsVisuals();
+  lv_obj_add_flag(setRestartOverlay, LV_OBJ_FLAG_HIDDEN);  // fresh open = no stale modal
   lv_scr_load_anim(settingsScreen, LV_SCR_LOAD_ANIM_MOVE_TOP, 200, 0, false);
 }
 
@@ -2807,6 +2798,12 @@ void PetUI::buildSleepScreen() {
   lv_obj_align(prompt, LV_ALIGN_TOP_MID, 0, 76);
   lv_obj_set_style_text_color(prompt, lv_color_hex(0xA080FF), 0);
 
+  lv_obj_t* reward = lv_label_create(sleepScreen);
+  lv_label_set_text(reward, "good: +12 mood +8 food   bad: -15 xp -10 mood");
+  lv_obj_set_style_text_font(reward, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(reward, lv_color_hex(0x3A3060), 0);
+  lv_obj_align(reward, LV_ALIGN_TOP_MID, 0, 354);
+
   const int btnH = 64, pitch = btnH + 16;
   for (int i = 0; i < 3; i++) {
     lv_obj_t* btn = lv_btn_create(sleepScreen);
@@ -2914,6 +2911,12 @@ void PetUI::buildWalkScreen() {
   lv_label_set_text(title, "WALK");
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 18);
   lv_obj_set_style_text_color(title, lv_color_hex(0x204A68), 0);
+
+  lv_obj_t* reward = lv_label_create(walkScreen);
+  lv_label_set_text_fmt(reward, "%d steps: +%d xp", WALK_DAILY_GOAL, WALK_GOAL_XP);
+  lv_obj_set_style_text_font(reward, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(reward, lv_color_hex(0x1E3A50), 0);
+  lv_obj_align(reward, LV_ALIGN_TOP_MID, 0, 42);
 
   // Progress ring toward WALK_DAILY_GOAL, same construction as the focus ring.
   walkArc = lv_arc_create(walkScreen);
@@ -3086,7 +3089,7 @@ void PetUI::buildPomodoroScreen() {
   lv_obj_align(pomTimeLabel, LV_ALIGN_CENTER, 0, -20);
 
   pomModeLabel = lv_label_create(pomodoroScreen);
-  lv_label_set_text(pomModeLabel, "FOCUS");
+  lv_label_set_text(pomModeLabel, "FOCUS  +25 xp/block");
   lv_obj_set_style_text_color(pomModeLabel, lv_color_hex(0x604020), 0);
   lv_obj_align(pomModeLabel, LV_ALIGN_CENTER, 0, 18);
 
@@ -3160,7 +3163,7 @@ void PetUI::refreshPomodoroRing() {
   lv_obj_set_style_text_color(pomTimeLabel, lv_color_hex(0xFFFFFF), 0);
 
   if (pomState == POM_IDLE) {
-    lv_label_set_text(pomModeLabel, "FOCUS");
+    lv_label_set_text(pomModeLabel, "FOCUS  +25 xp/block");
     lv_obj_set_style_text_color(pomModeLabel, lv_color_hex(0x604020), 0);
   } else if (isFocus) {
     lv_label_set_text(pomModeLabel, "FOCUS");
@@ -3199,7 +3202,7 @@ void PetUI::showPomodoroScreen() {
     lv_label_set_text_fmt(pomTimeLabel, "%02u:%02u", totalSecs / 60, totalSecs % 60);
     lv_obj_set_style_arc_color(pomArc, lv_color_hex(0xE87030), LV_PART_INDICATOR);
     lv_arc_set_value(pomArc, 1000);
-    lv_label_set_text(pomModeLabel, "FOCUS");
+    lv_label_set_text(pomModeLabel, "FOCUS  +25 xp/block");
     lv_obj_set_style_text_color(pomModeLabel, lv_color_hex(0x604020), 0);
     lv_label_set_text(pomBlockLabel, "");
   }

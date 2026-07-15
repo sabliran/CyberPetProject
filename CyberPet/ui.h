@@ -51,6 +51,8 @@ struct GoalInfo {
 // same reward shape as the back workout.
 #define PUSH_TARGET_REPS 10
 #define PUSH_XP          15
+// 15+ reps in one session earns a second snack (extra feedWorkout meal).
+#define PUSH_BONUS_REPS  15
 
 // Pull-up app: reps are counted by the board's IMU with the device in a
 // pocket (sketch calls addPullupRep while isPullupRunning). Lower target and
@@ -78,7 +80,6 @@ enum PetSoundEvent {
   SOUND_HABIT_UNDONE,
   SOUND_TROPHY,        // new trophy arrived in a sync — little fanfare
   SOUND_REP_BLIP,      // quiet blip per counted rep (pull-ups, push-ups)
-  SOUND_QUAKE,         // loud two-tone siren — quake watch triggered
   SOUND_MOVE_ALERT,    // insistent stand-up chime (sitting app; repeats until acked)
 };
 typedef void (*PetSoundCB)(int event);
@@ -94,6 +95,10 @@ typedef void (*SleepLogCB)(int quality);
 // touch until the BOOT button is pressed; step counting keeps running).
 // Unset = the button does nothing (sim has no panel to blank).
 typedef void (*PocketModeCB)(void);
+
+// Settings-screen restart button: fired after the user confirms the yes/no
+// dialog. The sketch saves state and calls ESP.restart().
+typedef void (*RestartCB)(void);
 
 // Sit app display power: the UI can't touch the panel (hardware-agnostic),
 // so it asks the sketch. false = screen dark to save battery while the sit
@@ -121,7 +126,7 @@ typedef void (*FocusDoneCB)(void);
 // (panel brightness, speaker volume, auto-sleep timeout). The UI applies the
 // pet-screen background itself. Plain bytes: NVS-blobbed via memcmp guard.
 struct DeviceSettings {
-  uint8_t volumePct;   // 0-100 master volume (quake siren ignores it)
+  uint8_t volumePct;   // 0-100 master volume 
   uint8_t soundTheme;  // 0 classic, 1 arcade, 2 soft
   uint8_t brightness;  // panel brightness 20-255
   uint8_t petBg;       // pet-screen background palette index (PET_BG_COLORS)
@@ -181,6 +186,7 @@ public:
   void setSteps(uint32_t stepsToday, bool sensorOk);
   void setPocketModeCallback(PocketModeCB cb) { pocketCB = cb; }
   void setScreenPowerCallback(ScreenPowerCB cb) { screenPowerCB = cb; }
+  void setRestartCallback(RestartCB cb) { restartCB = cb; }
 
   // Back-workout app: rep counter driven by the board's IMU. The sketch's
   // swing detector calls addBackRep() while isBackRunning() — cheap no-op
@@ -225,15 +231,6 @@ public:
   const DeviceSettings& getDeviceSettings() const { return devSettings; }
   void setSettingsCallback(SettingsChangedCB cb) { settingsCB = cb; }
 
-  // Quake watch: the sketch's STA/LTA detector runs while isQuakeArmed().
-  // pushQuakeSample feeds the on-screen seismograph (signed |a|-1g in mg,
-  // caller throttles); quakeTriggered/quakeCalm flip the alert state.
-  void showQuakeScreen();
-  bool isQuakeArmed() const { return quakeArmed; }
-  void pushQuakeSample(int devMilliG);
-  void quakeTriggered();
-  void quakeCalm(int peakMilliG);
-
   // Push-up app: rep counting is pure touch (nose-taps), so the UI owns it
   // entirely; the sketch registers the session-done callback and drives the
   // session end from the physical BOOT button: while isPushRunning() a short
@@ -258,7 +255,7 @@ public:
   void setSleepLogged(bool logged, int quality);
   void setSleepCallback(SleepLogCB cb) { sleepCB = cb; }
 
-  // Apps menu: a launcher listing the built-in apps (walk, back, quake, ...).
+  // Apps menu: a launcher listing the built-in apps (walk, back, sit, ...).
   // The board sketch wires it to a physical button (1.75B: short-press BOOT);
   // the sim maps it to the 'a' key. Calling it while the menu is already
   // showing closes it (toggle), so one button both opens and dismisses.
@@ -326,6 +323,7 @@ private:
   // back-workout screen widgets + state
   lv_obj_t*  backScreen;
   lv_obj_t*  backRepLabel;
+  lv_obj_t*  backRewardLabel;
   lv_obj_t*  backHintLabel;
   lv_obj_t*  backBtnLabel;
   int        backReps;
@@ -336,6 +334,7 @@ private:
   lv_obj_t*  settingsScreen;
   lv_obj_t*  setVolSlider;
   lv_obj_t*  setWifiLabel;
+  lv_obj_t*  setRestartOverlay;  // "are you sure" modal, hidden by default
   lv_obj_t*  setBriSlider;
   lv_obj_t*  setThemeBtns[3];
   lv_obj_t*  setBgBtns[5];
@@ -343,20 +342,11 @@ private:
   DeviceSettings devSettings;          // defaults set in init()
   SettingsChangedCB settingsCB = nullptr;  // deliberately NOT reset in init()
 
-  // quake watch screen widgets + state
-  lv_obj_t*  quakeScreen;
-  lv_obj_t*  quakeChart;
-  lv_chart_series_t* quakeSeries;
-  lv_obj_t*  quakeStatusLabel;
-  lv_obj_t*  quakeStatsLabel;
-  lv_obj_t*  quakeBtnLabel;
-  bool       quakeArmed;
-  int        quakeEvents;
-
   // pull-up screen widgets + state
   lv_obj_t*    pullupScreen;
   lv_obj_t*    pullupRepLabel;
   lv_obj_t*    pullupHintLabel;
+  lv_obj_t*    pullupRewardLabel;
   lv_obj_t*    pullupBtnLabel;
   int          pullupReps;
   bool         pullupRunning;
@@ -381,6 +371,9 @@ private:
   void sitAckMoved();
   void sitStop();
   void sitUpdateAux();  // choice row vs screen-off button visibility
+  // "gives: ..." blurb under the workout titles; snack numbers follow the
+  // dashboard difficulty so they're refreshed on every screen open.
+  void setWorkoutReward(lv_obj_t* lbl, int xp, bool pushBonus);
 
   // clean-room screen widgets + state
   lv_obj_t*   cleanScreen;
@@ -396,6 +389,7 @@ private:
   lv_obj_t*  pushScreen;
   lv_obj_t*  pushRepLabel;
   lv_obj_t*  pushHintLabel;
+  lv_obj_t*  pushRewardLabel;
   lv_obj_t*  pushStartBtn;          // hidden while a session runs (BOOT ends it)
   lv_obj_t*  pushBtnLabel;
   int        pushReps;
@@ -429,6 +423,7 @@ private:
   bool       walkSensorOk;
   PocketModeCB pocketCB = nullptr;  // deliberately NOT reset in init()
   ScreenPowerCB screenPowerCB = nullptr;  // deliberately NOT reset in init()
+  RestartCB restartCB = nullptr;          // deliberately NOT reset in init()
 
   // manual-sync state (press & hold + overlay)
   uint32_t   lastGestureMs;  // swipes also emit clicks on release; used to filter them out
@@ -475,7 +470,6 @@ private:
   void buildPullupScreen();
   void buildCleanScreen();
   void buildSitScreen();
-  void buildQuakeScreen();
   void buildSettingsScreen();
   void applySettingsVisuals();  // sync widgets + pet bg to devSettings
   void buildPushScreen();
@@ -536,8 +530,6 @@ private:
   static void pullupBtnCB(lv_event_t* e);
   static void pullupGestureCB(lv_event_t* e);
   static void pullupDoneTimerCB(lv_timer_t* t);
-  static void quakeBtnCB(lv_event_t* e);
-  static void quakeGestureCB(lv_event_t* e);
   static void settingsGestureCB(lv_event_t* e);
   static void setVolSliderCB(lv_event_t* e);
   static void setBriSliderCB(lv_event_t* e);
