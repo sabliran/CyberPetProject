@@ -116,6 +116,9 @@ public:
   void feed(int hungerAmount = 55, int moodBoost = 15);
   // The workout apps' meal — sized by the current difficulty (DIFF_MEAL_*).
   void feedWorkout();
+  // Meditation app: direct health restore (the only HP source besides a
+  // perfect habit day). Clamped at 100; dead pets can't meditate.
+  void heal(int hp);
   // Continuous hunger decay — call once per real hour (loop()/sim timer).
   // Death still only happens at dailyTick (a full unfed day at 0 hunger).
   void hungerHourlyTick();

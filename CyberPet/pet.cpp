@@ -94,6 +94,11 @@ void Pet::feedWorkout() {
   feed(DIFF_MEAL_HUNGER[diff()], DIFF_MEAL_MOOD[diff()]);
 }
 
+void Pet::heal(int hp) {
+  if (!state.alive || hp <= 0) return;
+  state.health = min(100, state.health + hp);
+}
+
 void Pet::dailyTick(bool anyHabitDoneToday, int missedHabits) {
   state.daysAlive++;
 

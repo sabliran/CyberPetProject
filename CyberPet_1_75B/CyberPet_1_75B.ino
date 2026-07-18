@@ -1440,6 +1440,7 @@ void loop() {
       bool inhibited = pocketMode || ui.isFocusRunning() || ui.isBackRunning() ||
                        ui.isPullupRunning() || ui.isCleanRunning() ||
                        ui.isSitRunning() ||  // a deep-sleeping device can't nag you to stand
+                       ui.isMedRunning() ||  // meditation darkens its own screen; sleep would kill the timer
                        capPending ||
                        (pmuOk && power.isVbusIn()) ||
                        (swLastStepMs != 0 && millis() - swLastStepMs < sleepMs);

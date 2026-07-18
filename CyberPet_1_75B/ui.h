@@ -218,6 +218,13 @@ public:
   void showSitScreen();
   bool isSitRunning() const { return sitRunning; }
 
+  // Meditation app: pick 10 or 20 minutes, sit still; the screen darkens
+  // shortly after START (BOOT peeks) and finishing heals HP — 10 min = +10,
+  // 20 min = +40 (patience pays disproportionately, per the user's spec).
+  // The sketch inhibits auto-sleep while isMedRunning().
+  void showMedScreen();
+  bool isMedRunning() const { return medRunning; }
+
   // Settings screen (swipe up on the pet). setDeviceSettings restores the
   // NVS-loaded values at boot (also re-applies the pet background); the
   // callback fires on every user change.
@@ -360,6 +367,22 @@ private:
   lv_obj_t*   sitBtnLabel;
   lv_obj_t*   sitChoiceBtns[4];
   lv_obj_t*   sitScreenOffBtn;   // visible only mid-session (not during alert)
+
+  // meditation screen widgets + state
+  lv_obj_t*   medScreen;
+  lv_obj_t*   medArc;
+  lv_obj_t*   medTimeLabel;
+  lv_obj_t*   medHintLabel;
+  lv_obj_t*   medBtnLabel;
+  lv_obj_t*   medChoiceBtns[2];
+  bool        medRunning;
+  bool        medDarkened;       // screen auto-darkens ~10 s into a session
+  uint8_t     medIntervalMin;    // 10 or 20
+  uint32_t    medStartMs;
+  lv_timer_t* medClockTimer;
+  void medMarkChoice();
+  void medStop(bool relight);
+  void medUpdateAux();
   bool        sitRunning;
   bool        sitAlerting;
   uint8_t     sitIntervalMin;
@@ -470,6 +493,7 @@ private:
   void buildPullupScreen();
   void buildCleanScreen();
   void buildSitScreen();
+  void buildMedScreen();
   void buildSettingsScreen();
   void applySettingsVisuals();  // sync widgets + pet bg to devSettings
   void buildPushScreen();
@@ -502,6 +526,10 @@ private:
   static void sitTapCB(lv_event_t* e);
   static void sitGestureCB(lv_event_t* e);
   static void sitClockCB(lv_timer_t* t);
+  static void medBtnCB(lv_event_t* e);
+  static void medChoiceCB(lv_event_t* e);
+  static void medGestureCB(lv_event_t* e);
+  static void medClockCB(lv_timer_t* t);
   static void pomGuiltRevertCB(lv_timer_t* t);
   static void sedentaryCheckCB(lv_timer_t* t);
 

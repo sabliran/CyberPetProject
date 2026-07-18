@@ -168,6 +168,8 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   cleanRunning = false; cleanStartMs = 0; cleanClockTimer = nullptr;
   sitRunning = false; sitAlerting = false; sitIntervalMin = 20;
   sitStartMs = 0; sitLastChimeMs = 0; sitClockTimer = nullptr;
+  medRunning = false; medDarkened = false; medIntervalMin = 10;
+  medStartMs = 0; medClockTimer = nullptr;
   devSettings = { 100, 0, 200, 0, 2 };  // volume, theme, brightness, bg, sleep-min
   pushReps = 0; pushRunning = false; lastPushTapMs = 0;
   sleepLogged = false; sleepQuality = 0;
@@ -184,6 +186,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   buildPullupScreen();
   buildCleanScreen();
   buildSitScreen();
+  buildMedScreen();
   buildSettingsScreen();
   buildPushScreen();
   buildTrophyScreen();
@@ -301,11 +304,11 @@ void PetUI::buildPetScreen() {
   //     after blobShape so it draws on top; a small timer re-pins it above
   //     the sprite as the roam/hop/squash animations move him around ---
   healthLabel = lv_label_create(petScreen);
-  lv_obj_set_width(healthLabel, 90);
+  lv_obj_set_width(healthLabel, 130);  // fits the "Koko  HP 100" nameplate
   lv_obj_set_style_text_align(healthLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(healthLabel, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(healthLabel, lv_color_hex(0x3EE8A0), 0);
-  lv_label_set_text(healthLabel, "HP 100");
+  lv_label_set_text(healthLabel, "Koko  HP 100");
 
   healthBar = lv_bar_create(petScreen);
   lv_obj_set_size(healthBar, 60, 6);
@@ -821,7 +824,7 @@ void PetUI::refreshPetScreen() {
     int hp = pet->getHealth();
     uint32_t col = hp >= 70 ? 0x3EE8A0 : hp >= 40 ? 0xD4A030 : 0xFF4040;
     lv_bar_set_value(healthBar, hp, LV_ANIM_ON);
-    lv_label_set_text_fmt(healthLabel, "HP %d", hp);
+    lv_label_set_text_fmt(healthLabel, "Koko  HP %d", hp);
     lv_obj_set_style_text_color(healthLabel, lv_color_hex(col), 0);
     lv_obj_set_style_bg_color(healthBar, lv_color_hex(col), LV_PART_INDICATOR);
   }
@@ -863,7 +866,7 @@ void PetUI::positionHealthBar() {
   if (barW < 36) barW = 36;
   lv_obj_set_size(healthBar, barW, 6);
   lv_obj_set_pos(healthBar, cx - barW / 2, cy - drawn / 2 - 14);
-  lv_obj_set_pos(healthLabel, cx - 45, cy - drawn / 2 - 32);
+  lv_obj_set_pos(healthLabel, cx - 65, cy - drawn / 2 - 32);
 }
 
 void PetUI::healthFollowCB(lv_timer_t* t) {
@@ -1490,6 +1493,7 @@ static const AppEntry APP_ENTRIES[] = {
   { LV_SYMBOL_EYE_CLOSE, "sleep",    0xA080FF },
   { LV_SYMBOL_HOME,      "clean room", 0xE8B040 },
   { LV_SYMBOL_BELL,      "sit",      0x40C8D8 },
+  { LV_SYMBOL_TINT,      "meditate", 0x60C8A8 },
   { LV_SYMBOL_OK,        "trophies", 0xFFD060 },
 };
 static const int APP_COUNT = sizeof(APP_ENTRIES) / sizeof(APP_ENTRIES[0]);
@@ -1590,6 +1594,9 @@ void PetUI::appsBtnCB(lv_event_t* e) {
       self->showSitScreen();
       break;
     case 7:
+      self->showMedScreen();
+      break;
+    case 8:
       self->showTrophyScreen();
       break;
     default:
@@ -1977,6 +1984,206 @@ void PetUI::pullupGestureCB(lv_event_t* e) {
   self->lastGestureMs = lv_tick_get();
   lv_indev_wait_release(lv_indev_get_act());
   self->pullupRunning = false;
+  self->showPetScreen();
+}
+
+/* ---- meditation screen ------------------------------------------------ */
+// Pick 10 or 20 minutes, press START, sit still. The screen darkens ~10 s
+// in (a lit panel is the opposite of meditation; BOOT peeks at the time)
+// and relights itself at the end with a gentle chime. Finishing heals HP:
+// 10 min = +10, 20 min = +40 — the long sit pays disproportionately, per
+// the user's spec. Stopping early or swiping away heals nothing.
+
+static const uint8_t  MED_CHOICES[2] = { 10, 20 };   // minutes
+static const int      MED_HEAL[2]    = { 10, 40 };   // hp
+static const uint32_t MED_DARK_DELAY_MS = 10000;
+
+void PetUI::buildMedScreen() {
+  medScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(medScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(medScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* title = lv_label_create(medScreen);
+  lv_label_set_text(title, "MEDITATE");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_style_text_color(title, lv_color_hex(0x60C8A8), 0);
+
+  medArc = lv_arc_create(medScreen);
+  lv_obj_set_size(medArc, 280, 280);
+  lv_obj_align(medArc, LV_ALIGN_CENTER, 0, -30);
+  lv_arc_set_rotation(medArc, 270);
+  lv_arc_set_bg_angles(medArc, 0, 359);
+  lv_arc_set_range(medArc, 0, 1000);
+  lv_arc_set_value(medArc, 1000);
+  lv_obj_set_style_arc_color(medArc, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
+  lv_obj_set_style_arc_width(medArc, 14, LV_PART_MAIN);
+  lv_obj_set_style_arc_color(medArc, lv_color_hex(0x60C8A8), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(medArc, 14, LV_PART_INDICATOR);
+  lv_obj_set_style_opa(medArc, LV_OPA_TRANSP, LV_PART_KNOB);
+  lv_obj_set_style_bg_opa(medArc, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(medArc, LV_OBJ_FLAG_CLICKABLE);
+
+  medTimeLabel = lv_label_create(medScreen);
+  lv_label_set_text(medTimeLabel, "10:00");
+  lv_obj_set_style_text_font(medTimeLabel, &lv_font_montserrat_32, 0);
+  lv_obj_set_style_text_color(medTimeLabel, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(medTimeLabel, LV_ALIGN_CENTER, 0, -46);
+
+  medHintLabel = lv_label_create(medScreen);
+  lv_label_set_text(medHintLabel, "sit still, breathe\nscreen sleeps once you start");
+  lv_obj_set_style_text_color(medHintLabel, lv_color_hex(0x2A6A58), 0);
+  lv_obj_set_style_text_align(medHintLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(medHintLabel, LV_ALIGN_CENTER, 0, -4);
+
+  lv_obj_t* btn = lv_btn_create(medScreen);
+  lv_obj_set_size(btn, 190, 48);
+  lv_obj_align(btn, LV_ALIGN_CENTER, 0, 56);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0x082A20), 0);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(btn, 14, 0);
+  lv_obj_set_style_border_width(btn, 2, 0);
+  lv_obj_set_style_border_color(btn, lv_color_hex(0x60C8A8), 0);
+  medBtnLabel = lv_label_create(btn);
+  lv_label_set_text(medBtnLabel, LV_SYMBOL_PLAY "  START");
+  lv_obj_set_style_text_color(medBtnLabel, lv_color_hex(0x60C8A8), 0);
+  lv_obj_center(medBtnLabel);
+  lv_obj_add_event_cb(btn, medBtnCB, LV_EVENT_CLICKED, this);
+
+  // Duration choices double as the reward blurb.
+  for (int i = 0; i < 2; i++) {
+    lv_obj_t* cb = lv_btn_create(medScreen);
+    lv_obj_set_size(cb, 140, 38);
+    lv_obj_align(cb, LV_ALIGN_TOP_MID, (i * 152) - 76, 340);
+    lv_obj_set_style_bg_color(cb, lv_color_hex(0x10101E), 0);
+    lv_obj_set_style_radius(cb, 10, 0);
+    lv_obj_set_style_border_width(cb, 2, 0);
+    lv_obj_set_style_border_color(cb, lv_color_hex(0x1E4438), 0);
+    lv_obj_t* lbl = lv_label_create(cb);
+    lv_label_set_text_fmt(lbl, "%dm  +%d hp", MED_CHOICES[i], MED_HEAL[i]);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0x8AB0A0), 0);
+    lv_obj_center(lbl);
+    lv_obj_set_user_data(cb, (void*)(intptr_t)i);
+    lv_obj_add_event_cb(cb, medChoiceCB, LV_EVENT_CLICKED, this);
+    medChoiceBtns[i] = cb;
+  }
+
+  lv_obj_t* hint = lv_label_create(medScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(medScreen, medGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::medMarkChoice() {
+  for (int i = 0; i < 2; i++) {
+    bool sel = (MED_CHOICES[i] == medIntervalMin);
+    lv_obj_set_style_border_color(medChoiceBtns[i],
+      lv_color_hex(sel ? 0x60C8A8 : 0x1E4438), 0);
+  }
+}
+
+void PetUI::medUpdateAux() {
+  for (int i = 0; i < 2; i++) {
+    if (medRunning) lv_obj_add_flag(medChoiceBtns[i], LV_OBJ_FLAG_HIDDEN);
+    else            lv_obj_clear_flag(medChoiceBtns[i], LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void PetUI::showMedScreen() {
+  if (!medRunning) {
+    lv_arc_set_value(medArc, 1000);
+    lv_label_set_text_fmt(medTimeLabel, "%02d:00", medIntervalMin);
+    lv_label_set_text(medHintLabel, "sit still, breathe\nscreen sleeps once you start");
+    lv_label_set_text(medBtnLabel, LV_SYMBOL_PLAY "  START");
+  }
+  medMarkChoice();
+  medUpdateAux();
+  lv_scr_load_anim(medScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+// relight: end-of-session paths that may run with the panel dark MUST turn
+// it back on — the dark state also suppresses touch (sketch), so leaving it
+// dark after medRunning clears would strand the user on a black screen.
+void PetUI::medStop(bool relight) {
+  medRunning = false;
+  if (medClockTimer) { lv_timer_del(medClockTimer); medClockTimer = nullptr; }
+  if (relight && medDarkened && screenPowerCB) screenPowerCB(true);
+  medDarkened = false;
+  lv_arc_set_value(medArc, 1000);
+  lv_label_set_text_fmt(medTimeLabel, "%02d:00", medIntervalMin);
+  lv_label_set_text(medBtnLabel, LV_SYMBOL_PLAY "  START");
+  medUpdateAux();
+}
+
+void PetUI::medBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+
+  if (!self->medRunning) {
+    self->medRunning  = true;
+    self->medDarkened = false;
+    self->medStartMs  = lv_tick_get();
+    lv_label_set_text_fmt(self->medHintLabel,
+        "breathe. +%d hp at the end\nBOOT peeks at the time",
+        MED_HEAL[self->medIntervalMin == MED_CHOICES[1] ? 1 : 0]);
+    lv_label_set_text(self->medBtnLabel, LV_SYMBOL_STOP "  STOP");
+    self->medUpdateAux();
+    if (!self->medClockTimer)
+      self->medClockTimer = lv_timer_create(medClockCB, 500, self);
+    return;
+  }
+  // STOP early — no heal.
+  self->medStop(true);
+  lv_label_set_text(self->medHintLabel, "sit still, breathe\nscreen sleeps once you start");
+}
+
+void PetUI::medChoiceCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (self->medRunning) return;
+  int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+  self->medIntervalMin = MED_CHOICES[idx];
+  self->medMarkChoice();
+  lv_label_set_text_fmt(self->medTimeLabel, "%02d:00", self->medIntervalMin);
+}
+
+void PetUI::medClockCB(lv_timer_t* t) {
+  PetUI* self = (PetUI*)t->user_data;
+  if (!self->medRunning) return;
+
+  uint32_t totalMs = (uint32_t)self->medIntervalMin * 60000UL;
+  uint32_t elapsed = lv_tick_get() - self->medStartMs;
+
+  if (!self->medDarkened && elapsed >= MED_DARK_DELAY_MS) {
+    self->medDarkened = true;
+    if (self->screenPowerCB) self->screenPowerCB(false);
+  }
+
+  if (elapsed >= totalMs) {
+    int heal = MED_HEAL[self->medIntervalMin == MED_CHOICES[1] ? 1 : 0];
+    self->medStop(true);  // relights before the chime — the reward should be seen
+    self->pet->heal(heal);
+    self->refreshPetScreen();
+    lv_label_set_text_fmt(self->medHintLabel, "inner peace  +%d hp", heal);
+    if (self->soundCB) self->soundCB(SOUND_HABIT_DONE);
+    return;
+  }
+
+  uint32_t remaining = totalMs - elapsed;
+  lv_arc_set_value(self->medArc, (int)(remaining * 1000 / totalMs));
+  uint32_t secs = (remaining + 999) / 1000;
+  lv_label_set_text_fmt(self->medTimeLabel, "%02u:%02u",
+                        (unsigned)(secs / 60), (unsigned)(secs % 60));
+}
+
+void PetUI::medGestureCB(lv_event_t* e) {
+  // Any swipe cancels the session (no heal) and returns to the pet.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->medStop(true);
   self->showPetScreen();
 }
 
