@@ -1075,9 +1075,9 @@ static void applySyncResults() {
 }
 
 static void fireDailyReset() {
-  bool didAnything = habits.anyDoneToday();
-  int  missed      = habits.missedToday();  // before resetDaily clears flags
-  pet.dailyTick(didAnything, missed);
+  int done   = habits.doneTodayCount();  // both counted before resetDaily
+  int missed = habits.missedToday();     // clears the flags
+  pet.dailyTick(done, missed);
   habits.resetDaily();
   storage.savePet(pet.getState());
   storage.saveHabits(habits);
@@ -1439,6 +1439,7 @@ void loop() {
       uint32_t dimMs   = sleepMs * 3 / 4;
       bool inhibited = pocketMode || ui.isFocusRunning() || ui.isBackRunning() ||
                        ui.isPullupRunning() || ui.isCleanRunning() ||
+                       ui.isHangRunning() ||  // a hold is 2 untouched minutes; don't dim mid-set
                        ui.isSitRunning() ||  // a deep-sleeping device can't nag you to stand
                        ui.isMedRunning() ||  // meditation darkens its own screen; sleep would kill the timer
                        capPending ||
@@ -1495,6 +1496,9 @@ void loop() {
           // Push-up session: BOOT is the DONE button (no on-screen DONE —
           // mid-push-up the nose counter made it a mis-tap hazard).
           ui.finishPushSession();
+        } else if (ui.isSquatRunning()) {
+          // Squat session: same contract — taps are reps, BOOT is DONE.
+          ui.finishSquatSession();
         } else {
           ui.showAppsMenu();
         }

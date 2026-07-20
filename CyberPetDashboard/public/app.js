@@ -85,8 +85,9 @@ async function loadPet() {
     hungerEl.style.color = '#FF4040';
   }
 
-  // Health: chipped by missed habits at the device's daily reset (10 per
-  // missed habit, capped 30/day; perfect days heal 15). 0 = dead.
+  // Health: per-habit credit at the device's daily reset — each done habit
+  // heals 10, each missed habit chips 10 (damage capped 30/day; ratios tilt
+  // with difficulty). 0 = dead.
   const health = pet.health ?? 100;
   const healthEl = document.getElementById('petHealth');
   if (!alive) {

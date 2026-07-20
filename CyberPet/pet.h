@@ -30,7 +30,7 @@ static const int DIFF_MEAL_HUNGER[3]    = { 35,    20,    12  };  // per workout
 static const int DIFF_MEAL_MOOD[3]      = { 12,    10,     8  };
 static const int DIFF_HP_DMG[3]         = {  5,    10,    15  };  // per missed habit
 static const int DIFF_HP_DMG_CAP[3]     = { 15,    30,    45  };  // per day
-static const int DIFF_HP_HEAL[3]        = { 20,    15,    10  };  // perfect day
+static const int DIFF_HP_HEAL[3]        = { 12,    10,     8  };  // per done habit
 
 // Evolution stages — blob visually grows and gains glow as it evolves
 enum PetStage {
@@ -56,11 +56,13 @@ enum PetStage {
 // an unattended day visibly starves the blob, an overnight costs ~30, so
 // mornings start hungry enough that a workout is truly needed.
 
-// Health: missed habits literally hurt. At the daily reset every active habit
-// left undone deals DIFF_HP_DMG damage (capped at DIFF_HP_DMG_CAP so a long
-// habit list isn't instantly lethal); a perfect day — something done and
-// nothing missed — heals DIFF_HP_HEAL. Health 0 = death, same finality as
-// starvation. On normal, full health to dead is 4 all-missed days.
+// Health: per-habit credit (July 2026 — the user wants the rule to scale as
+// the habit list grows). At the daily reset every done habit heals
+// DIFF_HP_HEAL and every missed habit deals DIFF_HP_DMG; the two are summed
+// (missed damage capped at DIFF_HP_DMG_CAP first, so a long habit list isn't
+// instantly lethal) and the result clamps 0-100. On normal that's ±10 per
+// habit, symmetric by design (user spec); easy/hard tilt the ratio instead
+// of just scaling it. Health 0 = death, same finality as starvation.
 
 // Mood below this threshold demotes the displayed stage by one (recoverable —
 // XP is never touched; raise mood above this and the stage returns immediately).
@@ -105,9 +107,11 @@ public:
   void addXP(int amount);
   void removeXP(int amount);  // exact inverse of addXP (habit un-done): xp and the +8 mood boost
   void resetProgress();       // dashboard-commanded: xp/stage/dashXpApplied to zero; mood/hunger/streaks untouched
-  // missedHabits: active habits left undone today (habits.missedToday(),
-  // counted BEFORE resetDaily clears the flags) — each deals health damage.
-  void dailyTick(bool anyHabitDoneToday, int missedHabits = 0);
+  // doneHabits/missedHabits: active habits done / left undone today
+  // (habits.doneTodayCount() / missedToday(), counted BEFORE resetDaily
+  // clears the flags). Per-habit HP credit — each done heals, each miss
+  // damages — see the health comment block above.
+  void dailyTick(int doneHabits, int missedHabits = 0);
   // Sleep app: 0 good, 1 medium, 2 bad. Good/medium lift mood + hunger;
   // bad costs XP, mood and hunger (see pet.cpp for the exact numbers).
   void logSleep(int quality);

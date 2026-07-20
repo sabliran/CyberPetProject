@@ -166,12 +166,15 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   backReps = 0; backRunning = false;
   pullupReps = 0; pullupRunning = false;
   cleanRunning = false; cleanStartMs = 0; cleanClockTimer = nullptr;
+  hangStage = 0; hangRunning = false; hangStartMs = 0; hangClockTimer = nullptr;
+  hangPassed[0] = hangPassed[1] = hangPassed[2] = false;
   sitRunning = false; sitAlerting = false; sitIntervalMin = 20;
   sitStartMs = 0; sitLastChimeMs = 0; sitClockTimer = nullptr;
   medRunning = false; medDarkened = false; medIntervalMin = 10;
   medStartMs = 0; medClockTimer = nullptr;
   devSettings = { 100, 0, 200, 0, 2 };  // volume, theme, brightness, bg, sleep-min
   pushReps = 0; pushRunning = false; lastPushTapMs = 0;
+  squatReps = 0; squatRunning = false; lastSquatTapMs = 0;
   sleepLogged = false; sleepQuality = 0;
   lastGestureMs = 0; lastPatMs = 0; syncRequested = false;
   syncOverlay = nullptr; syncLabel = nullptr; syncSpinner = nullptr;
@@ -185,10 +188,12 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   buildBackScreen();
   buildPullupScreen();
   buildCleanScreen();
+  buildHangScreen();
   buildSitScreen();
   buildMedScreen();
   buildSettingsScreen();
   buildPushScreen();
+  buildSquatScreen();
   buildTrophyScreen();
   buildSleepScreen();
   buildWalkScreen();
@@ -247,6 +252,16 @@ void PetUI::buildPetScreen() {
   xpLabel = lv_label_create(petScreen);
   lv_obj_align(xpLabel, LV_ALIGN_CENTER, 0, 90);
   lv_obj_set_style_text_color(xpLabel, lv_color_hex(0x4A6080), 0);
+
+  xpBar = lv_bar_create(petScreen);
+  lv_obj_set_size(xpBar, 140, 6);
+  lv_obj_align(xpBar, LV_ALIGN_CENTER, 0, 110);
+  lv_obj_set_style_bg_color(xpBar, lv_color_hex(0x0E0E1C), 0);
+  lv_obj_set_style_bg_opa(xpBar, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(xpBar, lv_color_hex(0x50A8E8), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_opa(xpBar, LV_OPA_COVER, LV_PART_INDICATOR);
+  lv_obj_set_style_radius(xpBar, 5, 0);
+  lv_obj_set_style_radius(xpBar, 5, LV_PART_INDICATOR);
 
   moodBar = lv_bar_create(petScreen);
   lv_obj_set_size(moodBar, 80, 6);
@@ -769,6 +784,10 @@ void PetUI::refreshPetScreen() {
   int xpIn   = pet->xpIntoCurrentLevel();
   int xpNeed = xpIn + pet->xpToNextLevel();
   lv_label_set_text_fmt(xpLabel, "%d / %d xp", xpIn, xpNeed);
+  // Range tracks the level's cost (grows 50/level), so the bar always reads
+  // as fraction-to-next-level.
+  lv_bar_set_range(xpBar, 0, xpNeed);
+  lv_bar_set_value(xpBar, xpIn, LV_ANIM_ON);
 
   // Expression timer fires faster at higher stages (more energy)
   lv_timer_set_period(exprTimer, EXPR_PERIOD_MS[stage]);
@@ -1490,6 +1509,8 @@ static const AppEntry APP_ENTRIES[] = {
   { LV_SYMBOL_REFRESH,   "back",     0xFFA050 },
   { LV_SYMBOL_DOWN,      "push-ups", 0xF06090 },
   { LV_SYMBOL_UP,        "pull-ups", 0x60D080 },
+  { LV_SYMBOL_DOWNLOAD,  "squats",   0xE87858 },
+  { LV_SYMBOL_MINUS,     "hang",     0xA8E050 },
   { LV_SYMBOL_EYE_CLOSE, "sleep",    0xA080FF },
   { LV_SYMBOL_HOME,      "clean room", 0xE8B040 },
   { LV_SYMBOL_BELL,      "sit",      0x40C8D8 },
@@ -1519,7 +1540,10 @@ void PetUI::buildAppsScreen() {
   const int  rows = (APP_COUNT + 1) / 2;
   // 5 rows only fit the round glass with slightly shorter cells: 5×58+4×6 =
   // 314 px tall keeps the top row's button corners inside the 233 px radius.
-  const int  bw = 160, bh = (rows > 4) ? 58 : 68, gx = 8, gy = (rows > 4) ? 6 : 8;
+  // 6 rows shrink again to 48: 6×48+5×6 = 318 px tall, and the top row's
+  // outer corners sit at ~228 px from center — just inside the glass.
+  const int  bw = 160, bh = (rows > 5) ? 48 : (rows > 4) ? 58 : 68,
+             gx = 8, gy = (rows > 4) ? 6 : 8;
   const int  btnH = 72, gap = 20, pitch = btnH + gap;  // single-column sizes
   for (int i = 0; i < APP_COUNT; i++) {
     lv_obj_t* btn = lv_btn_create(appsScreen);
@@ -1585,18 +1609,24 @@ void PetUI::appsBtnCB(lv_event_t* e) {
       self->showPullupScreen();
       break;
     case 4:
-      self->showSleepScreen();
+      self->showSquatScreen();
       break;
     case 5:
-      self->showCleanScreen();
+      self->showHangScreen();
       break;
     case 6:
-      self->showSitScreen();
+      self->showSleepScreen();
       break;
     case 7:
-      self->showMedScreen();
+      self->showCleanScreen();
       break;
     case 8:
+      self->showSitScreen();
+      break;
+    case 9:
+      self->showMedScreen();
+      break;
+    case 10:
       self->showTrophyScreen();
       break;
     default:
@@ -1606,13 +1636,13 @@ void PetUI::appsBtnCB(lv_event_t* e) {
 
 /* ---- push-up screen -------------------------------------------------- */
 
-void PetUI::setWorkoutReward(lv_obj_t* lbl, int xp, bool pushBonus) {
+void PetUI::setWorkoutReward(lv_obj_t* lbl, int xp, int bonusReps) {
   int d = pet->getSettings().difficulty;
   if (d < 0) d = 0;
   if (d > 2) d = 2;
-  if (pushBonus)
+  if (bonusReps > 0)
     lv_label_set_text_fmt(lbl, "gives: +%d xp, snack +%d food +%d mood\n%d+ reps: double snack",
-                          xp, DIFF_MEAL_HUNGER[d], DIFF_MEAL_MOOD[d], PUSH_BONUS_REPS);
+                          xp, DIFF_MEAL_HUNGER[d], DIFF_MEAL_MOOD[d], bonusReps);
   else
     lv_label_set_text_fmt(lbl, "gives: +%d xp, snack +%d food +%d mood",
                           xp, DIFF_MEAL_HUNGER[d], DIFF_MEAL_MOOD[d]);
@@ -1681,7 +1711,7 @@ void PetUI::buildPushScreen() {
 void PetUI::showPushScreen() {
   pushReps = 0;
   pushRunning = false;
-  setWorkoutReward(pushRewardLabel, PUSH_XP, true);
+  setWorkoutReward(pushRewardLabel, PUSH_XP, PUSH_BONUS_REPS);
   lv_label_set_text(pushRepLabel, "0");
   lv_label_set_text(pushHintLabel, "put it under you, press START");
   lv_obj_clear_flag(pushStartBtn, LV_OBJ_FLAG_HIDDEN);
@@ -1757,6 +1787,149 @@ void PetUI::pushGestureCB(lv_event_t* e) {
   self->showPetScreen();
 }
 
+/* ---- squat screen ----------------------------------------------------- */
+// Same contract as push-ups: every screen tap is one rep, the physical BOOT
+// button ends the session (the sketch calls finishSquatSession while
+// isSquatRunning()). Set the device somewhere tappable — a chair or stool in
+// front of you — and tap at the bottom of each rep.
+
+void PetUI::buildSquatScreen() {
+  squatScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(squatScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(squatScreen, LV_OBJ_FLAG_SCROLLABLE);
+  // The whole screen is the rep target, same as the push-up nose counter.
+  lv_obj_add_flag(squatScreen, LV_OBJ_FLAG_CLICKABLE);
+
+  lv_obj_t* title = lv_label_create(squatScreen);
+  lv_label_set_text(title, "SQUATS");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xE87858), 0);
+
+  squatRewardLabel = lv_label_create(squatScreen);
+  lv_obj_set_style_text_font(squatRewardLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(squatRewardLabel, lv_color_hex(0x6A3428), 0);
+  lv_obj_set_style_text_align(squatRewardLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(squatRewardLabel, LV_ALIGN_TOP_MID, 0, 56);
+
+  squatRepLabel = lv_label_create(squatScreen);
+  lv_label_set_text(squatRepLabel, "0");
+  lv_obj_set_style_text_font(squatRepLabel, &lv_font_montserrat_32, 0);
+  lv_obj_set_style_text_color(squatRepLabel, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(squatRepLabel, LV_ALIGN_CENTER, 0, -40);
+
+  squatHintLabel = lv_label_create(squatScreen);
+  lv_label_set_text(squatHintLabel, "set it where you can tap, press START");
+  lv_obj_set_style_text_color(squatHintLabel, lv_color_hex(0x8A4A34), 0);
+  lv_obj_set_style_text_align(squatHintLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(squatHintLabel, LV_ALIGN_CENTER, 0, 8);
+
+  // START only — hidden during the session; the physical BOOT button ends
+  // it (finishSquatSession), same reasoning as push-ups: mid-rep an
+  // on-screen DONE is a mis-tap hazard for the rep counter.
+  squatStartBtn = lv_btn_create(squatScreen);
+  lv_obj_set_size(squatStartBtn, 240, 56);
+  lv_obj_align(squatStartBtn, LV_ALIGN_CENTER, 0, 78);
+  lv_obj_set_style_bg_color(squatStartBtn, lv_color_hex(0x2A140C), 0);
+  lv_obj_set_style_bg_opa(squatStartBtn, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(squatStartBtn, 16, 0);
+  lv_obj_set_style_border_width(squatStartBtn, 2, 0);
+  lv_obj_set_style_border_color(squatStartBtn, lv_color_hex(0xE87858), 0);
+  lv_obj_t* btnLbl = lv_label_create(squatStartBtn);
+  lv_label_set_text(btnLbl, LV_SYMBOL_PLAY "  START");
+  lv_obj_set_style_text_color(btnLbl, lv_color_hex(0xE87858), 0);
+  lv_obj_center(btnLbl);
+  lv_obj_add_event_cb(squatStartBtn, squatBtnCB, LV_EVENT_CLICKED, this);
+
+  lv_obj_t* hint = lv_label_create(squatScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  // Screen-level tap = one rep (START consumes its own clicks and doesn't
+  // bubble, so pressing it never counts as a rep).
+  lv_obj_add_event_cb(squatScreen, squatTapCB, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(squatScreen, squatGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::showSquatScreen() {
+  squatReps = 0;
+  squatRunning = false;
+  setWorkoutReward(squatRewardLabel, SQUAT_XP, SQUAT_BONUS_REPS);
+  lv_label_set_text(squatRepLabel, "0");
+  lv_label_set_text(squatHintLabel, "set it where you can tap, press START");
+  lv_obj_clear_flag(squatStartBtn, LV_OBJ_FLAG_HIDDEN);
+  lv_scr_load_anim(squatScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+void PetUI::squatTapCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (!self->squatRunning) return;
+  // Swipe-release clicks and touch bounce are not squats: same gesture
+  // guard as everywhere, plus a tap debounce (even fast squats leave more
+  // than 400 ms between bottoms).
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  if (lv_tick_get() - self->lastSquatTapMs < 400) return;
+  self->lastSquatTapMs = lv_tick_get();
+
+  self->squatReps++;
+  lv_label_set_text_fmt(self->squatRepLabel, "%d", self->squatReps);
+  if (self->soundCB) self->soundCB(SOUND_REP_BLIP);  // audible confirm per rep
+  if (self->squatReps == SQUAT_TARGET_REPS)
+    lv_label_set_text(self->squatHintLabel, "target hit!\nkeep going, or BOOT = done");
+}
+
+void PetUI::squatBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  if (self->squatRunning) return;  // unreachable (button hidden), belt & braces
+
+  self->squatRunning = true;
+  self->squatReps = 0;
+  self->lastSquatTapMs = lv_tick_get();  // arm debounce so this press can't count
+  lv_label_set_text(self->squatRepLabel, "0");
+  lv_label_set_text_fmt(self->squatHintLabel,
+      "tap every rep! %d = snack\nBOOT button = done", SQUAT_TARGET_REPS);
+  lv_obj_add_flag(self->squatStartBtn, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Session end, driven by the physical BOOT button (sketch calls this when
+// isSquatRunning()). Awards if the target was reached, else back to armed.
+void PetUI::finishSquatSession() {
+  if (!squatRunning) return;
+  squatRunning = false;
+  lv_obj_clear_flag(squatStartBtn, LV_OBJ_FLAG_HIDDEN);
+  if (squatReps >= SQUAT_TARGET_REPS) {
+    pet->feedWorkout();  // meal size scales with dashboard difficulty
+    if (squatReps >= SQUAT_BONUS_REPS) pet->feedWorkout();  // 25+ = double snack
+    pet->addXP(SQUAT_XP);
+    refreshPetScreen();
+    if (squatReps >= SQUAT_BONUS_REPS)
+      lv_label_set_text_fmt(squatHintLabel, "beast! DOUBLE snack  +%d xp", SQUAT_XP);
+    else
+      lv_label_set_text_fmt(squatHintLabel, "fed Koko  +%d xp", SQUAT_XP);
+    if (soundCB) soundCB(SOUND_HABIT_DONE);
+    lv_timer_t* t = lv_timer_create(squatDoneTimerCB, 1200, this);
+    lv_timer_set_repeat_count(t, 1);
+  } else {
+    lv_label_set_text(squatHintLabel, "set it where you can tap, press START");
+  }
+}
+
+void PetUI::squatDoneTimerCB(lv_timer_t* t) {
+  PetUI* self = (PetUI*)t->user_data;
+  if (lv_scr_act() == self->squatScreen) self->showPetScreen();
+}
+
+void PetUI::squatGestureCB(lv_event_t* e) {
+  // Any swipe cancels the session (no award) and returns to the pet.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->squatRunning = false;
+  self->showPetScreen();
+}
+
 /* ---- back-workout screen -------------------------------------------- */
 
 void PetUI::buildBackScreen() {
@@ -1812,7 +1985,7 @@ void PetUI::buildBackScreen() {
 void PetUI::showBackScreen() {
   backReps = 0;
   backRunning = false;
-  setWorkoutReward(backRewardLabel, BACK_XP, false);
+  setWorkoutReward(backRewardLabel, BACK_XP);
   lv_label_set_text(backRepLabel, "0");
   lv_label_set_text(backHintLabel, "hold Koko, press START");
   lv_label_set_text(backBtnLabel, LV_SYMBOL_PLAY "  START");
@@ -1927,7 +2100,7 @@ void PetUI::buildPullupScreen() {
 void PetUI::showPullupScreen() {
   pullupReps = 0;
   pullupRunning = false;
-  setWorkoutReward(pullupRewardLabel, PULLUP_XP, false);
+  setWorkoutReward(pullupRewardLabel, PULLUP_XP);
   lv_label_set_text(pullupRepLabel, "0");
   lv_label_set_text(pullupHintLabel, "Koko in pocket, press START");
   lv_label_set_text(pullupBtnLabel, LV_SYMBOL_PLAY "  START");
@@ -2340,6 +2513,251 @@ void PetUI::cleanGestureCB(lv_event_t* e) {
   lv_indev_wait_release(lv_indev_get_act());
   self->cleanRunning = false;
   if (self->cleanClockTimer) { lv_timer_del(self->cleanClockTimer); self->cleanClockTimer = nullptr; }
+  self->showPetScreen();
+}
+
+/* ---- hang screen ------------------------------------------------------ */
+// Bar-hang progression: three isometric holds unlocked in order — bar hang,
+// then scapula hang, then L-sit. Tap anywhere to start, tap again when you
+// drop (mid-hang nobody has a finger free for a button). Holding to 1:00
+// banks the base reward (HANG_XP + snack) no matter how the set ends;
+// the full 2:00 auto-completes with DOUBLE everything and unlocks the next
+// stage. Dropping under 1:00 forfeits. Unlocks reset at reboot — the ladder
+// is re-earned each gym session.
+
+static const char* HANG_NAMES[3] = { "hang", "scapula", "L-sit" };
+
+void PetUI::buildHangScreen() {
+  hangScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(hangScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(hangScreen, LV_OBJ_FLAG_SCROLLABLE);
+  // The whole screen is the start/stop control (same idea as the push-up
+  // rep target): the tap lands right before jumping up / after dropping.
+  lv_obj_add_flag(hangScreen, LV_OBJ_FLAG_CLICKABLE);
+
+  lv_obj_t* title = lv_label_create(hangScreen);
+  lv_label_set_text(title, "HANG");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xA8E050), 0);
+
+  // Stage pills: the unlock ladder. Locked ones stay tappable and explain
+  // themselves via the hint — a disabled-dead button reads as broken.
+  for (int i = 0; i < 3; i++) {
+    lv_obj_t* btn = lv_btn_create(hangScreen);
+    lv_obj_set_size(btn, 104, 38);
+    lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 1) * 112, 64);
+    lv_obj_set_style_radius(btn, 19, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_t* lbl = lv_label_create(btn);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(lbl);
+    lv_obj_set_user_data(btn, (void*)(intptr_t)i);
+    lv_obj_add_event_cb(btn, hangStageBtnCB, LV_EVENT_CLICKED, this);
+    hangStageBtns[i] = btn;
+    hangStageLbls[i] = lbl;
+  }
+
+  // Fill-up ring: empty at 00:00, full at the 2:00 target (the inverse of
+  // the countdown apps — a hold grows, a sprint drains).
+  hangArc = lv_arc_create(hangScreen);
+  lv_obj_set_size(hangArc, 250, 250);
+  lv_obj_align(hangArc, LV_ALIGN_CENTER, 0, 30);
+  lv_arc_set_rotation(hangArc, 270);
+  lv_arc_set_bg_angles(hangArc, 0, 359);
+  lv_arc_set_range(hangArc, 0, 1000);
+  lv_arc_set_value(hangArc, 0);
+  lv_obj_set_style_arc_color(hangArc, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
+  lv_obj_set_style_arc_width(hangArc, 16, LV_PART_MAIN);
+  lv_obj_set_style_arc_color(hangArc, lv_color_hex(0xA8E050), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(hangArc, 16, LV_PART_INDICATOR);
+  lv_obj_set_style_opa(hangArc, LV_OPA_TRANSP, LV_PART_KNOB);
+  lv_obj_set_style_bg_opa(hangArc, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(hangArc, LV_OBJ_FLAG_CLICKABLE);  // taps fall through to the screen
+
+  hangTimeLabel = lv_label_create(hangScreen);
+  lv_label_set_text(hangTimeLabel, "00:00");
+  lv_obj_set_style_text_font(hangTimeLabel, &lv_font_montserrat_32, 0);
+  lv_obj_set_style_text_color(hangTimeLabel, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(hangTimeLabel, LV_ALIGN_CENTER, 0, 4);
+
+  hangHintLabel = lv_label_create(hangScreen);
+  lv_label_set_text(hangHintLabel, "");
+  lv_obj_set_style_text_font(hangHintLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(hangHintLabel, lv_color_hex(0x6A8A38), 0);
+  lv_obj_set_style_text_align(hangHintLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(hangHintLabel, LV_ALIGN_CENTER, 0, 46);
+
+  hangRewardLabel = lv_label_create(hangScreen);
+  lv_label_set_text(hangRewardLabel, "");
+  lv_obj_set_style_text_font(hangRewardLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(hangRewardLabel, lv_color_hex(0x556A28), 0);
+  lv_obj_set_style_text_align(hangRewardLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(hangRewardLabel, LV_ALIGN_CENTER, 0, 84);
+
+  lv_obj_t* hint = lv_label_create(hangScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(hangScreen, hangTapCB, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(hangScreen, hangGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::hangRefreshStages() {
+  for (int i = 0; i < 3; i++) {
+    bool locked = (i > 0) && !hangPassed[i - 1];
+    bool sel    = (i == hangStage);
+    uint32_t col = locked ? 0x3A3A4A : 0xA8E050;
+    lv_obj_set_style_border_color(hangStageBtns[i], lv_color_hex(col), 0);
+    lv_obj_set_style_border_width(hangStageBtns[i], sel ? 3 : 1, 0);
+    lv_obj_set_style_bg_color(hangStageBtns[i], lv_color_hex(sel ? 0x22300C : 0x10101E), 0);
+    lv_obj_set_style_text_color(hangStageLbls[i], lv_color_hex(col), 0);
+    if (locked)
+      lv_label_set_text_fmt(hangStageLbls[i], LV_SYMBOL_CLOSE " %s", HANG_NAMES[i]);
+    else if (hangPassed[i])
+      lv_label_set_text_fmt(hangStageLbls[i], LV_SYMBOL_OK " %s", HANG_NAMES[i]);
+    else
+      lv_label_set_text(hangStageLbls[i], HANG_NAMES[i]);
+  }
+}
+
+void PetUI::hangSelectStage(int s) {
+  hangStage = s;
+  lv_arc_set_value(hangArc, 0);
+  lv_label_set_text(hangTimeLabel, "00:00");
+  lv_label_set_text_fmt(hangHintLabel, "%s to 2:00 — tap to start", HANG_NAMES[s]);
+  hangRefreshStages();
+}
+
+void PetUI::showHangScreen() {
+  hangRunning = false;
+  if (hangClockTimer) { lv_timer_del(hangClockTimer); hangClockTimer = nullptr; }
+  // Custom two-tier reward line (setWorkoutReward only knows one tier);
+  // snack numbers follow the dashboard difficulty like the other workouts.
+  int d = pet->getSettings().difficulty;
+  if (d < 0) d = 0;
+  if (d > 2) d = 2;
+  lv_label_set_text_fmt(hangRewardLabel,
+                        "1:00 gives: +%d xp, snack +%d food +%d mood\n2:00: double it all + next unlock",
+                        HANG_XP, DIFF_MEAL_HUNGER[d], DIFF_MEAL_MOOD[d]);
+  // Open on the next rung of the ladder: the first stage not yet passed.
+  int s = 0;
+  while (s < 2 && hangPassed[s]) s++;
+  hangSelectStage(s);
+  lv_scr_load_anim(hangScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+void PetUI::hangTapCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  // Swipes emit a CLICKED on release; same guard as the other app screens.
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+
+  if (!self->hangRunning) {
+    self->hangRunning = true;
+    self->hangStartMs = lv_tick_get();
+    lv_arc_set_value(self->hangArc, 0);
+    lv_label_set_text(self->hangTimeLabel, "00:00");
+    lv_label_set_text(self->hangHintLabel, "hold on! tap when you drop");
+    if (!self->hangClockTimer)
+      self->hangClockTimer = lv_timer_create(hangClockCB, 250, self);
+    return;
+  }
+
+  // Dropped before 2:00. Past 1:00 the base reward is banked either way;
+  // under 1:00 forfeits. The time stays up so you know your best.
+  uint32_t held = lv_tick_get() - self->hangStartMs;
+  self->hangRunning = false;
+  if (self->hangClockTimer) { lv_timer_del(self->hangClockTimer); self->hangClockTimer = nullptr; }
+  unsigned secs = (unsigned)(held / 1000);
+  if (held >= HANG_PASS_MS) {
+    self->hangAward(1);
+    lv_label_set_text_fmt(self->hangHintLabel, "held %02u:%02u — snack earned! 2:00 doubles it",
+                          secs / 60, secs % 60);
+  } else {
+    lv_label_set_text_fmt(self->hangHintLabel, "dropped at %02u:%02u — 1:00 earns the snack",
+                          secs / 60, secs % 60);
+  }
+}
+
+// Shared reward for both tiers: mult=1 for a 1:00 hold, mult=2 for the full
+// 2:00. Two feedWorkout() calls (not one big meal) so the double snack
+// tracks the difficulty table exactly like the push-up bonus does.
+void PetUI::hangAward(int mult) {
+  int stageBefore = pet->getStage();
+  int levelBefore = pet->getLevel();
+  pet->addXP(HANG_XP * mult);
+  for (int i = 0; i < mult; i++) pet->feedWorkout();
+  refreshPetScreen();
+  lv_area_t area;
+  lv_obj_get_coords(hangArc, &area);
+  showXpPopup(area, HANG_XP * mult);
+  if (pet->getStage() > stageBefore) showEvolutionBurst();
+  else if (pet->getLevel() > levelBefore) showLevelUpPill(pet->getLevel());
+  if (soundCB) soundCB(SOUND_HABIT_DONE);
+}
+
+void PetUI::hangStageBtnCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  if (self->hangRunning) return;  // no switching mid-hold
+  int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+  if (idx > 0 && !self->hangPassed[idx - 1]) {
+    lv_label_set_text_fmt(self->hangHintLabel, "hold %s to 2:00 to unlock %s",
+                          HANG_NAMES[idx - 1], HANG_NAMES[idx]);
+    return;
+  }
+  self->hangSelectStage(idx);
+}
+
+void PetUI::hangClockCB(lv_timer_t* t) {
+  PetUI* self = (PetUI*)t->user_data;
+  if (!self->hangRunning) return;
+
+  uint32_t elapsed = lv_tick_get() - self->hangStartMs;
+  if (elapsed < HANG_TARGET_MS) {
+    lv_arc_set_value(self->hangArc, (int)(elapsed * 1000 / HANG_TARGET_MS));
+    unsigned secs = (unsigned)(elapsed / 1000);
+    lv_label_set_text_fmt(self->hangTimeLabel, "%02u:%02u", secs / 60, secs % 60);
+    // Flip the hint once when the base reward is banked (strcmp guards the
+    // 250 ms tick from re-setting — and invalidating — identical text).
+    static const char* SECURED = "snack banked! 2:00 doubles it";
+    if (elapsed >= HANG_PASS_MS &&
+        strcmp(lv_label_get_text(self->hangHintLabel), SECURED) != 0)
+      lv_label_set_text(self->hangHintLabel, SECURED);
+    return;
+  }
+
+  // Full 2:00 held — double reward, then advance the ladder. Repeat
+  // completions pay again (it's still exercise); the unlock only matters
+  // the first time.
+  self->hangRunning = false;
+  lv_timer_del(t);
+  self->hangClockTimer = nullptr;
+  int done = self->hangStage;
+  self->hangPassed[done] = true;
+  self->hangAward(2);
+
+  if (done < 2) {
+    // Jump the selection to the freshly unlocked stage, armed and ready.
+    self->hangSelectStage(done + 1);
+    lv_label_set_text_fmt(self->hangHintLabel, "2:00 — double snack! next: %s",
+                          HANG_NAMES[done + 1]);
+  } else {
+    lv_arc_set_value(self->hangArc, 1000);
+    lv_label_set_text(self->hangTimeLabel, "02:00");
+    lv_label_set_text(self->hangHintLabel, "full 2:00 set! Koko feasts double");
+    self->hangRefreshStages();  // repaint the L-sit pill with its check
+  }
+}
+
+void PetUI::hangGestureCB(lv_event_t* e) {
+  // Any swipe closes; a running hold is forfeited (no partial credit).
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->hangRunning = false;
+  if (self->hangClockTimer) { lv_timer_del(self->hangClockTimer); self->hangClockTimer = nullptr; }
   self->showPetScreen();
 }
 

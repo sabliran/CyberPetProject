@@ -50,9 +50,10 @@ public:
   bool completeHabit(int index);   // returns false if already done today
   bool uncompleteHabit(int index); // undo today's completion; returns false if not done today
   bool anyDoneToday() const;
-  // Active habits still undone today — call BEFORE resetDaily() clears the
-  // flags; feeds the pet's daily health damage.
+  // Active habits still undone / done today — call BEFORE resetDaily()
+  // clears the flags; both feed the pet's daily health partial-credit rule.
   int missedToday() const;
+  int doneTodayCount() const;
 
   // Call once per day at RTC-driven midnight rollover
   void resetDaily();

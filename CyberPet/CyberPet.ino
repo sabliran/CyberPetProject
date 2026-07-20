@@ -169,8 +169,9 @@ static void applySyncResults() {
 // Fire the daily reset: advance the pet, reset habits, persist, refresh UI.
 // Shared by both the NTP and uptime paths.
 static void fireDailyReset() {
-  bool didAnything = habits.anyDoneToday();
-  pet.dailyTick(didAnything);
+  int done   = habits.doneTodayCount();  // both counted before resetDaily
+  int missed = habits.missedToday();     // clears the flags
+  pet.dailyTick(done, missed);
   habits.resetDaily();
   storage.savePet(pet.getState());
   storage.saveHabits(habits);

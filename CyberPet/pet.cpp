@@ -99,8 +99,9 @@ void Pet::heal(int hp) {
   state.health = min(100, state.health + hp);
 }
 
-void Pet::dailyTick(bool anyHabitDoneToday, int missedHabits) {
+void Pet::dailyTick(int doneHabits, int missedHabits) {
   state.daysAlive++;
+  bool anyHabitDoneToday = doneHabits > 0;
 
   // Hunger now decays continuously via hungerHourlyTick(); the daily tick
   // only enforces the death rule: a full unfed day at 0 hunger is fatal.
@@ -109,16 +110,14 @@ void Pet::dailyTick(bool anyHabitDoneToday, int missedHabits) {
   }
   state.fedToday = false;  // reset for the new day
 
-  // Health: every missed habit hurts (capped so a long list isn't lethal in
-  // one day); a perfect day — nothing missed, something done — heals.
+  // Health, per-habit credit: each done habit heals, each missed habit
+  // damages (missed damage capped first so a long list isn't lethal in one
+  // day), summed and clamped 0-100. Scales with the habit list by design.
   if (state.alive) {
-    if (missedHabits > 0) {
-      int dmg = min(missedHabits * DIFF_HP_DMG[diff()], DIFF_HP_DMG_CAP[diff()]);
-      state.health = max(0, state.health - dmg);
-      if (state.health == 0) state.alive = false;
-    } else if (anyHabitDoneToday) {
-      state.health = min(100, state.health + DIFF_HP_HEAL[diff()]);
-    }
+    int gain = doneHabits * DIFF_HP_HEAL[diff()];
+    int loss = min(missedHabits * DIFF_HP_DMG[diff()], DIFF_HP_DMG_CAP[diff()]);
+    state.health = max(0, min(100, state.health + gain - loss));
+    if (state.health == 0) state.alive = false;
   }
 
   if (!state.alive) {

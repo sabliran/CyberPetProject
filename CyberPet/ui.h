@@ -54,11 +54,29 @@ struct GoalInfo {
 // 15+ reps in one session earns a second snack (extra feedWorkout meal).
 #define PUSH_BONUS_REPS  15
 
+// Squat app: same touch-counted contract as push-ups — set the device where
+// you can tap it (chair/stool in front of you), one tap per rep. Higher
+// target than push-ups: squats come easier. BOOT ends the session.
+#define SQUAT_TARGET_REPS 15
+#define SQUAT_XP          15
+// 25+ reps in one session earns a second snack.
+#define SQUAT_BONUS_REPS  25
+
 // Pull-up app: reps are counted by the board's IMU with the device in a
 // pocket (sketch calls addPullupRep while isPullupRunning). Lower target and
 // higher XP than the other strength apps — pull-ups are the hard ones.
 #define PULLUP_TARGET_REPS 5
 #define PULLUP_XP          20
+
+// Hang app: three isometric holds unlocked in order — bar hang, then
+// scapula hang, then L-sit. Tap starts/stops the timer. Holding to 1:00
+// banks the base reward (HANG_XP + one workout snack) even if you drop
+// before 2:00; the full 2:00 pays DOUBLE everything and is what unlocks
+// the next stage (user spec, July 2026). Unlocks persist until reboot only
+// (deliberately no NVS — the progression is re-earned each gym session).
+#define HANG_PASS_MS   (1u * 60u * 1000u)  // base reward threshold
+#define HANG_TARGET_MS (2u * 60u * 1000u)  // double reward + unlock
+#define HANG_XP        15
 
 struct TrophyInfo {
   char name[TROPHY_NAME_LEN];
@@ -225,6 +243,14 @@ public:
   void showMedScreen();
   bool isMedRunning() const { return medRunning; }
 
+  // Hang app: bar-hang progression (hang -> scapula -> L-sit; tap anywhere
+  // to start/stop — mid-hang nobody has a finger free for a button). 1:00
+  // held = base reward, 2:00 = double + next-stage unlock. The sketch
+  // inhibits auto-sleep while isHangRunning(): a hold is two untouched
+  // minutes and must not dim mid-set.
+  void showHangScreen();
+  bool isHangRunning() const { return hangRunning; }
+
   // Settings screen (swipe up on the pet). setDeviceSettings restores the
   // NVS-loaded values at boot (also re-applies the pet background); the
   // callback fires on every user change.
@@ -248,6 +274,13 @@ public:
   void finishPushSession();
   void setPushDoneCallback(PushDoneCB cb) { pushDoneCB = cb; }
   void setFocusDoneCallback(FocusDoneCB cb) { focusDoneCB = cb; }
+
+  // Squat app: same contract as push-ups — screen taps are reps, the
+  // physical BOOT button ends the session (the sketch calls
+  // finishSquatSession while isSquatRunning() instead of opening the menu).
+  void showSquatScreen();
+  bool isSquatRunning() const { return squatRunning; }
+  void finishSquatSession();
 
   // Trophy screen (apps menu). Same sync contract as quests/goals:
   // call setTrophies after every successful sync.
@@ -286,6 +319,7 @@ private:
   lv_obj_t* stageLabel;
   lv_obj_t* moodBar;
   lv_obj_t* xpLabel;
+  lv_obj_t* xpBar;     // progress within the current level, under xpLabel
 
   // battery state
   lv_obj_t*    clockLabel;        // pet screen clock; empty until updateClock()
@@ -396,7 +430,25 @@ private:
   void sitUpdateAux();  // choice row vs screen-off button visibility
   // "gives: ..." blurb under the workout titles; snack numbers follow the
   // dashboard difficulty so they're refreshed on every screen open.
-  void setWorkoutReward(lv_obj_t* lbl, int xp, bool pushBonus);
+  // bonusReps > 0 adds the "N+ reps: double snack" line.
+  void setWorkoutReward(lv_obj_t* lbl, int xp, int bonusReps = 0);
+
+  // hang screen widgets + state
+  lv_obj_t*   hangScreen;
+  lv_obj_t*   hangArc;
+  lv_obj_t*   hangTimeLabel;
+  lv_obj_t*   hangHintLabel;
+  lv_obj_t*   hangRewardLabel;
+  lv_obj_t*   hangStageBtns[3];
+  lv_obj_t*   hangStageLbls[3];
+  int         hangStage;       // selected: 0 hang, 1 scapula, 2 L-sit
+  bool        hangPassed[3];   // stage i+1 unlocks when hangPassed[i]
+  bool        hangRunning;
+  uint32_t    hangStartMs;
+  lv_timer_t* hangClockTimer;
+  void hangSelectStage(int s);
+  void hangRefreshStages();  // pill styles: locked / unlocked / passed / selected
+  void hangAward(int mult);  // XP + snacks ×mult, popup, level/stage celebration
 
   // clean-room screen widgets + state
   lv_obj_t*   cleanScreen;
@@ -420,6 +472,17 @@ private:
   uint32_t   lastPushTapMs;         // debounce for nose taps
   PushDoneCB pushDoneCB = nullptr;  // deliberately NOT reset in init()
   FocusDoneCB focusDoneCB = nullptr;  // deliberately NOT reset in init()
+
+  // squat screen widgets + state (mirrors the push-up app: taps = reps,
+  // BOOT = done)
+  lv_obj_t*  squatScreen;
+  lv_obj_t*  squatRepLabel;
+  lv_obj_t*  squatHintLabel;
+  lv_obj_t*  squatRewardLabel;
+  lv_obj_t*  squatStartBtn;         // hidden while a session runs (BOOT ends it)
+  int        squatReps;
+  bool       squatRunning;
+  uint32_t   lastSquatTapMs;        // tap debounce, same idea as push-ups
 
   // trophy screen widgets + data
   lv_obj_t*   trophyScreen;
@@ -492,11 +555,13 @@ private:
   void buildBackScreen();
   void buildPullupScreen();
   void buildCleanScreen();
+  void buildHangScreen();
   void buildSitScreen();
   void buildMedScreen();
   void buildSettingsScreen();
   void applySettingsVisuals();  // sync widgets + pet bg to devSettings
   void buildPushScreen();
+  void buildSquatScreen();
   void buildTrophyScreen();
   void refreshTrophyScreen();
   void buildSleepScreen();
@@ -521,6 +586,10 @@ private:
   static void cleanBtnCB(lv_event_t* e);
   static void cleanGestureCB(lv_event_t* e);
   static void cleanClockCB(lv_timer_t* t);
+  static void hangTapCB(lv_event_t* e);
+  static void hangStageBtnCB(lv_event_t* e);
+  static void hangGestureCB(lv_event_t* e);
+  static void hangClockCB(lv_timer_t* t);
   static void sitBtnCB(lv_event_t* e);
   static void sitChoiceCB(lv_event_t* e);
   static void sitTapCB(lv_event_t* e);
@@ -568,6 +637,10 @@ private:
   static void pushTapCB(lv_event_t* e);
   static void pushGestureCB(lv_event_t* e);
   static void pushDoneTimerCB(lv_timer_t* t);
+  static void squatBtnCB(lv_event_t* e);
+  static void squatTapCB(lv_event_t* e);
+  static void squatGestureCB(lv_event_t* e);
+  static void squatDoneTimerCB(lv_timer_t* t);
   static void sleepBtnCB(lv_event_t* e);
   static void sleepGestureCB(lv_event_t* e);
   static void sleepReturnTimerCB(lv_timer_t* t);
