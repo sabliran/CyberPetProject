@@ -1697,15 +1697,17 @@ void PetUI::buildPushScreen() {
   lv_obj_add_event_cb(pushStartBtn, pushBtnCB, LV_EVENT_CLICKED, this);
 
   lv_obj_t* hint = lv_label_create(pushScreen);
-  lv_label_set_text(hint, "swipe to close");
+  lv_label_set_text(hint, "BOOT button = exit");
   lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
   lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
   lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
 
   // Screen-level tap = one rep (the button consumes its own clicks and
   // doesn't bubble, so START/DONE presses never count as reps).
+  // Deliberately NO gesture handler: sloppy workout taps read as swipes
+  // and were exiting mid-set — BOOT is the only way off this screen, and
+  // a stray swipe just lands in the rep counter.
   lv_obj_add_event_cb(pushScreen, pushTapCB, LV_EVENT_CLICKED, this);
-  lv_obj_add_event_cb(pushScreen, pushGestureCB, LV_EVENT_GESTURE, this);
 }
 
 void PetUI::showPushScreen() {
@@ -1778,15 +1780,6 @@ void PetUI::pushDoneTimerCB(lv_timer_t* t) {
   if (lv_scr_act() == self->pushScreen) self->showPetScreen();
 }
 
-void PetUI::pushGestureCB(lv_event_t* e) {
-  // Any swipe cancels the session (no award) and returns to the pet.
-  PetUI* self = (PetUI*)lv_event_get_user_data(e);
-  self->lastGestureMs = lv_tick_get();
-  lv_indev_wait_release(lv_indev_get_act());
-  self->pushRunning = false;
-  self->showPetScreen();
-}
-
 /* ---- squat screen ----------------------------------------------------- */
 // Same contract as push-ups: every screen tap is one rep, the physical BOOT
 // button ends the session (the sketch calls finishSquatSession while
@@ -1841,15 +1834,16 @@ void PetUI::buildSquatScreen() {
   lv_obj_add_event_cb(squatStartBtn, squatBtnCB, LV_EVENT_CLICKED, this);
 
   lv_obj_t* hint = lv_label_create(squatScreen);
-  lv_label_set_text(hint, "swipe to close");
+  lv_label_set_text(hint, "BOOT button = exit");
   lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
   lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
   lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
 
   // Screen-level tap = one rep (START consumes its own clicks and doesn't
   // bubble, so pressing it never counts as a rep).
+  // Deliberately NO gesture handler, same as push-ups: BOOT is the only
+  // way off this screen; a stray swipe just lands in the rep counter.
   lv_obj_add_event_cb(squatScreen, squatTapCB, LV_EVENT_CLICKED, this);
-  lv_obj_add_event_cb(squatScreen, squatGestureCB, LV_EVENT_GESTURE, this);
 }
 
 void PetUI::showSquatScreen() {
@@ -1919,15 +1913,6 @@ void PetUI::finishSquatSession() {
 void PetUI::squatDoneTimerCB(lv_timer_t* t) {
   PetUI* self = (PetUI*)t->user_data;
   if (lv_scr_act() == self->squatScreen) self->showPetScreen();
-}
-
-void PetUI::squatGestureCB(lv_event_t* e) {
-  // Any swipe cancels the session (no award) and returns to the pet.
-  PetUI* self = (PetUI*)lv_event_get_user_data(e);
-  self->lastGestureMs = lv_tick_get();
-  lv_indev_wait_release(lv_indev_get_act());
-  self->squatRunning = false;
-  self->showPetScreen();
 }
 
 /* ---- back-workout screen -------------------------------------------- */

@@ -269,6 +269,9 @@ public:
   // session end from the physical BOOT button: while isPushRunning() a short
   // press calls finishPushSession() instead of opening the apps menu (no
   // on-screen DONE — mid-push-up it was a nose-tap mis-hit hazard).
+  // NO swipe-to-close on this screen (user spec, July 2026): sloppy workout
+  // taps read as swipes and exited mid-set. BOOT is the only way out — it
+  // finishes a running session, and opens the apps menu when idle.
   void showPushScreen();
   bool isPushRunning() const { return pushRunning; }
   void finishPushSession();
@@ -278,6 +281,7 @@ public:
   // Squat app: same contract as push-ups — screen taps are reps, the
   // physical BOOT button ends the session (the sketch calls
   // finishSquatSession while isSquatRunning() instead of opening the menu).
+  // Like push-ups, NO swipe-to-close: BOOT is the only exit.
   void showSquatScreen();
   bool isSquatRunning() const { return squatRunning; }
   void finishSquatSession();
@@ -635,11 +639,9 @@ private:
   static void setSleepBtnCB(lv_event_t* e);
   static void pushBtnCB(lv_event_t* e);
   static void pushTapCB(lv_event_t* e);
-  static void pushGestureCB(lv_event_t* e);
   static void pushDoneTimerCB(lv_timer_t* t);
   static void squatBtnCB(lv_event_t* e);
   static void squatTapCB(lv_event_t* e);
-  static void squatGestureCB(lv_event_t* e);
   static void squatDoneTimerCB(lv_timer_t* t);
   static void sleepBtnCB(lv_event_t* e);
   static void sleepGestureCB(lv_event_t* e);
