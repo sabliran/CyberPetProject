@@ -172,7 +172,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   sitStartMs = 0; sitLastChimeMs = 0; sitClockTimer = nullptr;
   medRunning = false; medDarkened = false; medIntervalMin = 10;
   medStartMs = 0; medClockTimer = nullptr;
-  devSettings = { 100, 0, 200, 0, 2 };  // volume, theme, brightness, bg, sleep-min
+  devSettings = { 100, 0, 200, 0, 2, 1, 1 };  // volume, theme, brightness, bg, sleep-min, steps-on, lift-wake
   pushReps = 0; pushRunning = false; lastPushTapMs = 0;
   squatReps = 0; squatRunning = false; lastSquatTapMs = 0;
   sleepLogged = false; sleepQuality = 0;
@@ -3043,11 +3043,11 @@ void PetUI::buildSettingsScreen() {
   lv_obj_add_event_cb(setVolSlider, setVolSliderCB, LV_EVENT_RELEASED, this);
 
   // sound theme
-  settingsLabel(settingsScreen, "sounds", 118);
+  settingsLabel(settingsScreen, "sounds", 112);
   for (int i = 0; i < 3; i++) {
     lv_obj_t* btn = lv_btn_create(settingsScreen);
     lv_obj_set_size(btn, 92, 36);
-    lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 1) * 100, 140);
+    lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 1) * 100, 134);
     lv_obj_set_style_radius(btn, 10, 0);
     lv_obj_t* lbl = lv_label_create(btn);
     lv_label_set_text(lbl, THEME_NAMES[i]);
@@ -3059,10 +3059,10 @@ void PetUI::buildSettingsScreen() {
   }
 
   // brightness
-  settingsLabel(settingsScreen, "brightness", 190);
+  settingsLabel(settingsScreen, "brightness", 180);
   setBriSlider = lv_slider_create(settingsScreen);
   lv_obj_set_size(setBriSlider, 240, 14);
-  lv_obj_align(setBriSlider, LV_ALIGN_TOP_MID, 0, 214);
+  lv_obj_align(setBriSlider, LV_ALIGN_TOP_MID, 0, 204);
   lv_slider_set_range(setBriSlider, 20, 255);   // 20 floor: never invisible
   lv_obj_set_style_bg_color(setBriSlider, lv_color_hex(0x1A1A2E), LV_PART_MAIN);
   lv_obj_set_style_bg_color(setBriSlider, lv_color_hex(0xFFD060), LV_PART_INDICATOR);
@@ -3070,11 +3070,11 @@ void PetUI::buildSettingsScreen() {
   lv_obj_add_event_cb(setBriSlider, setBriSliderCB, LV_EVENT_VALUE_CHANGED, this);
 
   // pet background
-  settingsLabel(settingsScreen, "pet background", 246);
+  settingsLabel(settingsScreen, "pet background", 230);
   for (int i = 0; i < 5; i++) {
     lv_obj_t* btn = lv_btn_create(settingsScreen);
     lv_obj_set_size(btn, 40, 36);
-    lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 2) * 48, 268);
+    lv_obj_align(btn, LV_ALIGN_TOP_MID, (i - 2) * 48, 252);
     lv_obj_set_style_radius(btn, 10, 0);
     // swatch shows the actual color; black gets a faint fill to stay visible
     lv_obj_set_style_bg_color(btn, lv_color_hex(i ? PET_BG_COLORS[i] : 0x14141E), 0);
@@ -3085,11 +3085,11 @@ void PetUI::buildSettingsScreen() {
   }
 
   // auto-sleep timeout
-  settingsLabel(settingsScreen, "auto-sleep", 316);
+  settingsLabel(settingsScreen, "auto-sleep", 294);
   for (int i = 0; i < 4; i++) {
     lv_obj_t* btn = lv_btn_create(settingsScreen);
     lv_obj_set_size(btn, 56, 36);
-    lv_obj_align(btn, LV_ALIGN_TOP_MID, (i * 64) - 96, 338);
+    lv_obj_align(btn, LV_ALIGN_TOP_MID, (i * 64) - 96, 316);
     lv_obj_set_style_radius(btn, 10, 0);
     lv_obj_t* lbl = lv_label_create(btn);
     lv_label_set_text_fmt(lbl, "%dm", SLEEP_CHOICES[i]);
@@ -3100,9 +3100,55 @@ void PetUI::buildSettingsScreen() {
     setSleepBtns[i] = btn;
   }
 
+  // battery toggles, side by side: step counter (background IMU polling) and
+  // lift-to-wake (IMU wake-on-motion during auto-sleep). Either off = less
+  // drain; tap-to-wake keeps working no matter what.
+  lv_obj_t* stepsLbl = settingsLabel(settingsScreen, "step counter", 358);
+  lv_obj_align(stepsLbl, LV_ALIGN_TOP_MID, -78, 358);
+  setStepsSwitch = lv_switch_create(settingsScreen);
+  lv_obj_set_size(setStepsSwitch, 60, 28);
+  lv_obj_align(setStepsSwitch, LV_ALIGN_TOP_MID, -78, 378);
+  lv_obj_set_style_bg_color(setStepsSwitch, lv_color_hex(0x1A1A2E), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(setStepsSwitch, lv_color_hex(0xA8E050),
+                            LV_PART_INDICATOR | LV_STATE_CHECKED);
+  lv_obj_set_style_bg_color(setStepsSwitch, lv_color_hex(0xC8D0E0), LV_PART_KNOB);
+  lv_obj_add_event_cb(setStepsSwitch, [](lv_event_t* e) {
+    PetUI* self = (PetUI*)lv_event_get_user_data(e);
+    lv_obj_t* sw = lv_event_get_target(e);
+    if (lv_tick_get() - self->lastGestureMs < 600) {
+      // tail of the opening swipe, not a real tap — put the state back
+      if (self->devSettings.stepsOn) lv_obj_add_state(sw, LV_STATE_CHECKED);
+      else lv_obj_clear_state(sw, LV_STATE_CHECKED);
+      return;
+    }
+    self->devSettings.stepsOn = lv_obj_has_state(sw, LV_STATE_CHECKED) ? 1 : 0;
+    if (self->settingsCB) self->settingsCB(self->devSettings);
+  }, LV_EVENT_VALUE_CHANGED, this);
+
+  lv_obj_t* liftLbl = settingsLabel(settingsScreen, "lift to wake", 358);
+  lv_obj_align(liftLbl, LV_ALIGN_TOP_MID, 78, 358);
+  setLiftSwitch = lv_switch_create(settingsScreen);
+  lv_obj_set_size(setLiftSwitch, 60, 28);
+  lv_obj_align(setLiftSwitch, LV_ALIGN_TOP_MID, 78, 378);
+  lv_obj_set_style_bg_color(setLiftSwitch, lv_color_hex(0x1A1A2E), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(setLiftSwitch, lv_color_hex(0xFFD060),
+                            LV_PART_INDICATOR | LV_STATE_CHECKED);
+  lv_obj_set_style_bg_color(setLiftSwitch, lv_color_hex(0xC8D0E0), LV_PART_KNOB);
+  lv_obj_add_event_cb(setLiftSwitch, [](lv_event_t* e) {
+    PetUI* self = (PetUI*)lv_event_get_user_data(e);
+    lv_obj_t* sw = lv_event_get_target(e);
+    if (lv_tick_get() - self->lastGestureMs < 600) {
+      if (self->devSettings.liftWake) lv_obj_add_state(sw, LV_STATE_CHECKED);
+      else lv_obj_clear_state(sw, LV_STATE_CHECKED);
+      return;
+    }
+    self->devSettings.liftWake = lv_obj_has_state(sw, LV_STATE_CHECKED) ? 1 : 0;
+    if (self->settingsCB) self->settingsCB(self->devSettings);
+  }, LV_EVENT_VALUE_CHANGED, this);
+
   lv_obj_t* hint = lv_label_create(settingsScreen);
   lv_label_set_text(hint, "swipe down to close");
-  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -28);
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -22);
   lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
   lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
 
@@ -3183,7 +3229,7 @@ void PetUI::buildSettingsScreen() {
   lv_obj_set_style_text_font(setWifiLabel, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(setWifiLabel, lv_color_hex(0x5A6478), 0);
   lv_label_set_text(setWifiLabel, LV_SYMBOL_WIFI "  checking...");
-  lv_obj_align(setWifiLabel, LV_ALIGN_TOP_MID, 0, 388);
+  lv_obj_align(setWifiLabel, LV_ALIGN_TOP_MID, 0, 410);
 
   // The modal must dim everything, including widgets created after it.
   lv_obj_move_foreground(setRestartOverlay);
@@ -3214,6 +3260,10 @@ void PetUI::applySettingsVisuals() {
   for (int i = 0; i < 4; i++)
     if (SLEEP_CHOICES[i] == devSettings.sleepMin) sleepIdx = i;
   settingsMarkSelected(setSleepBtns, 4, sleepIdx, 0xA080FF);
+  if (devSettings.stepsOn) lv_obj_add_state(setStepsSwitch, LV_STATE_CHECKED);
+  else lv_obj_clear_state(setStepsSwitch, LV_STATE_CHECKED);
+  if (devSettings.liftWake) lv_obj_add_state(setLiftSwitch, LV_STATE_CHECKED);
+  else lv_obj_clear_state(setLiftSwitch, LV_STATE_CHECKED);
   // bg swatches keep their color fill; selection = border only
   for (int i = 0; i < 5; i++) {
     lv_obj_set_style_border_width(setBgBtns[i], 2, 0);
@@ -3231,6 +3281,8 @@ void PetUI::setDeviceSettings(const DeviceSettings& s) {
   if (devSettings.petBg >= 5) devSettings.petBg = 0;
   if (devSettings.soundTheme >= 3) devSettings.soundTheme = 0;
   if (devSettings.brightness < 20) devSettings.brightness = 20;
+  if (devSettings.stepsOn > 1) devSettings.stepsOn = 1;
+  if (devSettings.liftWake > 1) devSettings.liftWake = 1;
   applySettingsVisuals();
 }
 
@@ -3613,7 +3665,8 @@ void PetUI::refreshWalkScreen() {
     return;
   }
   lv_label_set_text_fmt(walkStepLabel, "%u", (unsigned)walkSteps);
-  lv_label_set_text(walkCaptionLabel, "steps");
+  lv_label_set_text(walkCaptionLabel,
+                    devSettings.stepsOn ? "steps" : "steps (counter off)");
   // steps × stride, shown in km with two decimals — integer math only.
   uint32_t meters = walkSteps * WALK_STRIDE_CM / 100;
   lv_label_set_text_fmt(walkDistLabel, "%u.%02u km",

@@ -76,7 +76,7 @@ static StepState stepState;        // today's steps, NVS-backed (storage.h)
 
 // Device settings (swipe-up screen), NVS-backed. Loaded in setup(); the UI
 // fires settingsChangedCB (below, near pocket mode) on every user change.
-static DeviceSettings devCfg = { 100, 0, 200, 0, 2 };
+static DeviceSettings devCfg = { 100, 0, 200, 0, 2, 1, 1 };
 static uint32_t  pedLastRaw = 0;   // last raw step-counter reading
 
 // Software step detector. The QMI8658's silicon pedometer never produced a
@@ -126,7 +126,12 @@ static void swStepSample() {
   static bool     swWalking = false;
   static uint32_t swBurst   = 0;
 
-  if (!swAbove && swFilt > 0.06f) {
+  // Step counter toggled off (settings screen): the sampler may still be
+  // running for a focus/back session — don't let that motion leak into
+  // swSteps, or it gets credited as steps when the counter is re-enabled.
+  if (!devCfg.stepsOn) {
+    swWalking = false; swBurst = 0;
+  } else if (!swAbove && swFilt > 0.06f) {
     swAbove = true;
     if (nowMs - swLastStepMs > 250) {
       if (nowMs - swLastStepMs > SW_CADENCE_MS) { swWalking = false; swBurst = 0; }
@@ -584,6 +589,9 @@ static void sitScreenPowerCB(bool on) {
 // Settings screen: persist + apply the hardware-facing knobs. Brightness
 // lands live (slider preview); volume/theme/sleep are read at use time.
 static void settingsChangedCB(const DeviceSettings& s) {
+  // Turning the step counter off pauses the lazy once-a-minute persist below,
+  // so flush any steps counted in the last minute before they stop mattering.
+  if (devCfg.stepsOn && !s.stepsOn) storage.saveStepState(stepState);
   devCfg = s;
   storage.saveDeviceSettings(s);
   if (!pocketMode && !sitDisplayOff) gfx->setBrightness(devCfg.brightness);
@@ -621,8 +629,9 @@ static void touchReadCB(lv_indev_drv_t* indev, lv_indev_data_t* data) {
 // Forgotten-on is the #1 battery killer: an idle pet screen still burns
 // ~100 mA (AMOLED + WiFi + CPU). After AUTOSLEEP_MS without touch input the
 // device saves everything and deep-sleeps (µA-level draw; wake is a fresh
-// boot, all state lives in NVS). Wake sources: BOOT press (ext0, GPIO0) and
-// pick-up motion — the QMI8658's INT2 is the only IMU interrupt routed to the
+// boot, all state lives in NVS). Wake sources: screen tap (ext0, TP_INT) and
+// pick-up motion (optional — devCfg.liftWake, settings screen) — the
+// QMI8658's INT2 is the only IMU interrupt routed to the
 // ESP32 (GPIO21 per the 1.75 schematic; INT1 and the RTC INT only reach the
 // TCA9554 expander, which can't wake the chip). Wake-on-motion runs the accel
 // alone at a low-power ODR (tens of µA) — cheaper than keeping the touch
@@ -693,8 +702,15 @@ static void enterAutoSleep() {
   storage.saveStepState(stepState);
   gfx->setBrightness(0);
   gfx->displayOff();                            // CO5300 sleep-in
-  if (imuOk && imuWakeOnMotionInit(WOM_THRESHOLD_MG))
+  if (devCfg.liftWake && imuOk && imuWakeOnMotionInit(WOM_THRESHOLD_MG)) {
     esp_sleep_enable_ext1_wakeup(1ULL << 21, ESP_EXT1_WAKEUP_ANY_HIGH);  // pickup
+  } else if (imuOk) {
+    // Lift-to-wake off (settings): power the accel down entirely for the
+    // sleep — no WoM sampling, no motion wakeups in a bag or pocket.
+    // Tap-to-wake below stays the wake path; next boot's qmi.begin()
+    // resets the chip, so nothing needs undoing.
+    imuWriteReg(0x08, 0x00);                    // CTRL7: all sensors off
+  }
   // Tap-to-wake: the CST92xx stays powered through deep sleep (its rail is
   // never cut) and pulses TP_INT low on a touch, so this costs nothing extra.
   // Deliberately NOT the BOOT button: GPIO0 is a strapping pin, and a
@@ -1282,10 +1298,16 @@ void loop() {
   }
 
   // ── Walk app: software step detection + bookkeeping ───────────────────────
-  if (imuOk) swStepSample();   // every loop pass; self-throttles to ~66 Hz
+  // devCfg.stepsOn (settings screen) pauses the background ~66 Hz accel reads
+  // and the 2 s poll to save battery; today's count freezes and resumes on
+  // re-enable. The sampler still runs during focus/back sessions because it
+  // doubles as their motion detector (guilt-trip / rep counter) — those are
+  // short and user-initiated, so they don't drain anything in the background.
+  if (imuOk && (devCfg.stepsOn || ui.isFocusRunning() || ui.isBackRunning()))
+    swStepSample();   // self-throttles to ~66 Hz
 
   static uint32_t lastStepPoll = 0, lastStepPersist = 0;
-  if (imuOk && millis() - lastStepPoll > 2000) {
+  if (imuOk && devCfg.stepsOn && millis() - lastStepPoll > 2000) {
     lastStepPoll = millis();
 
     // New calendar day (RTC/NTP) → today's count starts over.

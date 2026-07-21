@@ -149,6 +149,10 @@ struct DeviceSettings {
   uint8_t brightness;  // panel brightness 20-255
   uint8_t petBg;       // pet-screen background palette index (PET_BG_COLORS)
   uint8_t sleepMin;    // auto-sleep timeout in minutes (1/2/5/10)
+  uint8_t stepsOn;     // 1 = background step counting; 0 pauses the IMU
+                       // sampler to save battery (walk app shows a note)
+  uint8_t liftWake;    // 1 = pick-up motion wakes from auto-sleep (IMU
+                       // wake-on-motion); 0 = tap-to-wake only, accel off
 };
 typedef void (*SettingsChangedCB)(const DeviceSettings& s);
 
@@ -384,6 +388,8 @@ private:
   lv_obj_t*  setThemeBtns[3];
   lv_obj_t*  setBgBtns[5];
   lv_obj_t*  setSleepBtns[4];
+  lv_obj_t*  setStepsSwitch;
+  lv_obj_t*  setLiftSwitch;
   DeviceSettings devSettings;          // defaults set in init()
   SettingsChangedCB settingsCB = nullptr;  // deliberately NOT reset in init()
 

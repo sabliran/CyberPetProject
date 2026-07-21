@@ -230,9 +230,16 @@ void Storage::saveDeviceSettings(const DeviceSettings& s) {
 }
 
 DeviceSettings Storage::loadDeviceSettings() {
-  DeviceSettings s = { 100, 0, 200, 0, 2 };  // defaults mirror PetUI::init()
-  if (prefs.getBytesLength("dev_settings") == sizeof(DeviceSettings))
+  DeviceSettings s = { 100, 0, 200, 0, 2, 1, 1 };  // defaults mirror PetUI::init()
+  size_t len = prefs.getBytesLength("dev_settings");
+  if (len == sizeof(DeviceSettings)) {
     prefs.getBytes("dev_settings", &s, sizeof(DeviceSettings));
+  } else if (len > 0 && len < sizeof(DeviceSettings)) {
+    // Blob written by firmware before the struct grew. Fields are append-only
+    // plain bytes, so a partial read keeps the user's old knobs and the new
+    // trailing fields stay at their defaults.
+    prefs.getBytes("dev_settings", &s, len);
+  }
   return s;
 }
 
