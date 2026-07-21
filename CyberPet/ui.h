@@ -78,6 +78,15 @@ struct GoalInfo {
 #define HANG_TARGET_MS (2u * 60u * 1000u)  // double reward + unlock
 #define HANG_XP        15
 
+// Plank app: single isometric hold, same tap-anywhere start/stop and 1:00 /
+// 2:00 reward tiers as the hang app. Every hold >= PLANK_MIN_RECORD_MS is
+// remembered (last + best, NVS via PlankDoneCB) and feeds the dashboard's
+// plank analytics through the sync request.
+#define PLANK_PASS_MS       (1u * 60u * 1000u)  // base reward threshold
+#define PLANK_TARGET_MS     (2u * 60u * 1000u)  // auto-complete, double reward
+#define PLANK_XP            15
+#define PLANK_MIN_RECORD_MS 5000u  // shorter = a mis-tap, not a session
+
 struct TrophyInfo {
   char name[TROPHY_NAME_LEN];
 };
@@ -138,6 +147,11 @@ typedef void (*PullupDoneCB)(void);
 
 // Focus app: fired when a 25-minute focus block completes (after XP award).
 typedef void (*FocusDoneCB)(void);
+
+// Plank app: fired when a hold ends (>= PLANK_MIN_RECORD_MS). The sketch
+// persists last/best/lifetime totals to NVS and feeds them into the sync
+// request for the dashboard's plank analytics.
+typedef void (*PlankDoneCB)(uint32_t heldMs);
 
 // Device settings (swipe-up screen). Owned by the UI; the board sketch
 // registers the callback to persist them and apply the hardware-facing ones
@@ -254,6 +268,15 @@ public:
   // minutes and must not dim mid-set.
   void showHangScreen();
   bool isHangRunning() const { return hangRunning; }
+
+  // Plank app: tap anywhere to start/stop the hold; 1:00 = base reward,
+  // 2:00 auto-completes with double. The sketch persists finished holds
+  // (PlankDoneCB) and restores last/best at boot via setPlankStats. Auto-
+  // sleep is inhibited while isPlankRunning() — same reason as hang.
+  void showPlankScreen();
+  bool isPlankRunning() const { return plankRunning; }
+  void setPlankDoneCB(PlankDoneCB cb) { plankDoneCB = cb; }
+  void setPlankStats(uint32_t lastMs, uint32_t bestMs);
 
   // Settings screen (swipe up on the pet). setDeviceSettings restores the
   // NVS-loaded values at boot (also re-applies the pet background); the
@@ -460,6 +483,23 @@ private:
   void hangRefreshStages();  // pill styles: locked / unlocked / passed / selected
   void hangAward(int mult);  // XP + snacks ×mult, popup, level/stage celebration
 
+  // plank screen widgets + state
+  lv_obj_t*   plankScreen;
+  lv_obj_t*   plankArc;
+  lv_obj_t*   plankTimeLabel;
+  lv_obj_t*   plankHintLabel;
+  lv_obj_t*   plankRewardLabel;
+  lv_obj_t*   plankStatsLabel;   // "last M:SS · best M:SS"
+  bool        plankRunning;
+  uint32_t    plankStartMs;
+  uint32_t    plankLastMs;       // restored at boot via setPlankStats
+  uint32_t    plankBestMs;
+  lv_timer_t* plankClockTimer;
+  PlankDoneCB plankDoneCB = nullptr;  // deliberately NOT reset in init()
+  void plankAward(int mult);        // same shape as hangAward
+  void plankRecord(uint32_t heldMs);  // update last/best + fire plankDoneCB
+  void plankRefreshStats();
+
   // clean-room screen widgets + state
   lv_obj_t*   cleanScreen;
   lv_obj_t*   cleanArc;
@@ -566,6 +606,7 @@ private:
   void buildPullupScreen();
   void buildCleanScreen();
   void buildHangScreen();
+  void buildPlankScreen();
   void buildSitScreen();
   void buildMedScreen();
   void buildSettingsScreen();
@@ -600,6 +641,9 @@ private:
   static void hangStageBtnCB(lv_event_t* e);
   static void hangGestureCB(lv_event_t* e);
   static void hangClockCB(lv_timer_t* t);
+  static void plankTapCB(lv_event_t* e);
+  static void plankGestureCB(lv_event_t* e);
+  static void plankClockCB(lv_timer_t* t);
   static void sitBtnCB(lv_event_t* e);
   static void sitChoiceCB(lv_event_t* e);
   static void sitTapCB(lv_event_t* e);

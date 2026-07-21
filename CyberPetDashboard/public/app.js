@@ -828,6 +828,59 @@ async function loadPullUps() {
               : `<span>all pull-up trophies earned</span>`);
 }
 
+// ---- Plank -------------------------------------------------------------------
+
+function fmtHold(ms) {
+  const s = Math.round(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+async function loadPlank() {
+  const { totalSec, sessions, bestMs, history } = await api('/plank');
+  const now = new Date();
+  const todayKey = walkDateKey(now);
+
+  const todaySec = history[todayKey] || 0;
+  const dates = Object.keys(history).sort();
+  document.getElementById('plankSummary').innerHTML =
+    `<b class="plank-num">${sessions}</b> hold${sessions === 1 ? '' : 's'} total` +
+    (bestMs ? `  ·  best <b class="plank-num">${fmtHold(bestMs)}</b>` : '') +
+    (todaySec ? `  ·  <b class="plank-num">${fmtHold(todaySec * 1000)}</b> today`
+              : (dates.length ? `  ·  last: ${dates[dates.length - 1]}` : ''));
+
+  // Daily seconds held, last 14 days — same bar chart as walking. The scale
+  // never drops below one full 2:00 hold so a lone short day doesn't look epic.
+  const chart = document.getElementById('plankChart');
+  chart.innerHTML = '';
+  let maxSec = 120;
+  const days = [];
+  for (let i = 13; i >= 0; i--) {
+    const key = walkDateKey(new Date(now.getTime() - i * 864e5));
+    const sec = history[key] || 0;
+    days.push({ key, sec });
+    if (sec > maxSec) maxSec = sec;
+  }
+  for (const day of days) {
+    const bar = document.createElement('div');
+    bar.className = 'walk-col';
+    const pct = Math.max(2, day.sec / maxSec * 100);
+    bar.innerHTML = `<div class="walk-col__bar plank-col__bar${day.key === todayKey ? ' walk-col__bar--today' : ''}" style="height:${pct}%"></div>`;
+    bar.title = `${day.key}: ${fmtHold(day.sec * 1000)} held`;
+    chart.appendChild(bar);
+  }
+
+  // Analytics: lifetime minutes, last-7-days minutes, active days last 30.
+  let weekSec = 0;
+  for (const day of days.slice(-7)) weekSec += day.sec;
+  const cutoff30 = walkDateKey(new Date(now.getTime() - 29 * 864e5));
+  let days30 = 0;
+  for (const [key, sec] of Object.entries(history)) if (key >= cutoff30 && sec > 0) days30++;
+  document.getElementById('plankStats').innerHTML = `
+    <span><b>${Math.round(totalSec / 60)}</b> min lifetime</span>
+    <span><b>${(weekSec / 60).toFixed(1)}</b> min last 7 days</span>
+    <span><b>${days30}</b> day${days30 === 1 ? '' : 's'} planked last 30</span>`;
+}
+
 // ---- Motion Lab ----------------------------------------------------------------
 // Plots device-recorded workout captures (|a| in g at ~66 Hz) and replays the
 // firmware's rep detectors over them, so a bad count can be diagnosed from the
@@ -1098,7 +1151,7 @@ function flashPushed() {
 // ---- Boot -----------------------------------------------------------------
 
 async function refreshAll() {
-  await Promise.all([loadPet(), loadHabits(), loadGoals(), loadQuests(), loadSettings(), loadHistory(), loadWalking(), loadSleep(), loadBackWorkouts(), loadPushUps(), loadPullUps(), loadFocus(), loadTrophies(), loadMotionLab()]);
+  await Promise.all([loadPet(), loadHabits(), loadGoals(), loadQuests(), loadSettings(), loadHistory(), loadWalking(), loadSleep(), loadBackWorkouts(), loadPushUps(), loadPullUps(), loadPlank(), loadFocus(), loadTrophies(), loadMotionLab()]);
 }
 
 refreshAll();
@@ -1110,5 +1163,6 @@ setInterval(loadSleep, 15000);
 setInterval(loadBackWorkouts, 15000);
 setInterval(loadPushUps, 15000);
 setInterval(loadPullUps, 15000);
+setInterval(loadPlank, 15000);
 setInterval(loadFocus, 15000);
 setInterval(loadMotionLab, 15000);

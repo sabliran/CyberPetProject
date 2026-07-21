@@ -104,6 +104,12 @@ public:
   void setPullupSessions(uint32_t n) { pullupSessions_ = n; }
   void setFocusSessions(uint32_t n) { focusSessions_ = n; }
 
+  // Plank app: lifetime totals (monotonic) + all-time best hold. The server
+  // delta-records totalSec into a per-day history, keyed by the steps date.
+  void setPlankInfo(uint32_t totalSec, uint32_t sessions, uint32_t bestMs) {
+    plankTotalSec_ = totalSec; plankSessions_ = sessions; plankBestMs_ = bestMs;
+  }
+
   // Detector-tuning aid: POST a raw |a| capture (uint16 little-endian
   // milli-g) to the dashboard, which stores it for offline analysis.
   // WiFi-only — the USB bridge doesn't carry this. Returns true on 2xx.
@@ -120,6 +126,9 @@ private:
   uint32_t  pushSessions_ = 0;
   uint32_t  pullupSessions_ = 0;
   uint32_t  focusSessions_ = 0;
+  uint32_t  plankTotalSec_ = 0;
+  uint32_t  plankSessions_ = 0;
+  uint32_t  plankBestMs_ = 0;
   QuestInfo quests[MAX_QUESTS];
   int       questCount = 0;
   GoalInfo  goals[MAX_GOALS];

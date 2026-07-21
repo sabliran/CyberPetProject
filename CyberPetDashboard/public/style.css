@@ -761,6 +761,11 @@ body {
 .pullup-num { color: #60D080; }
 .pullup-dot--done { background: #60D080; }
 
+/* ---- Plank panel (walk-style bar chart, amber accent) ------------------- */
+
+.plank-num { color: #E8A050; }
+.plank-col__bar { background: #E8A050; }
+
 /* ---- Focus panel (same strip layout) ------------------------------------ */
 
 .focus-num { color: #E87030; }

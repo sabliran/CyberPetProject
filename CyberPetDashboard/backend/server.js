@@ -439,7 +439,7 @@ const WALK_STRIDE_CM  = 70;
 const STEP_HISTORY_DAYS = 90;
 
 app.post('/api/sync', (req, res) => {
-  const { deviceId, petState, completedHabits, steps, sleep, backSessions, pushSessions, pullupSessions, focusSessions } = req.body;
+  const { deviceId, petState, completedHabits, steps, sleep, backSessions, pushSessions, pullupSessions, focusSessions, plank } = req.body;
   // Use the server's local date as the canonical completion date.
   // Device and server clocks may disagree slightly around midnight — the server
   // date is always preferred so history records are consistent.
@@ -551,6 +551,27 @@ app.post('/api/sync', (req, res) => {
       d.focusHistory[key] = (d.focusHistory[key] || 0) + delta;
       const cutoff = new Date(Date.now() - STEP_HISTORY_DAYS * 864e5).toISOString().slice(0, 10);
       for (const k of Object.keys(d.focusHistory)) if (k < cutoff) delete d.focusHistory[k];
+    }
+    // Plank: the device reports lifetime seconds held; the growth since the
+    // last sync is credited to today (device date preferred, same as steps).
+    // Session count and best hold are monotonic maxes like the counters above.
+    if (plank && typeof plank.totalSec === 'number' && plank.totalSec > (d.plankTotalSec || 0)) {
+      const delta = plank.totalSec - (d.plankTotalSec || 0);
+      d.plankTotalSec = plank.totalSec;
+      let key = todayDate;
+      if (steps && steps.year >= 2020 && steps.dayOfYear >= 1 && steps.dayOfYear <= 366) {
+        key = new Date(Date.UTC(steps.year, 0, steps.dayOfYear)).toISOString().slice(0, 10);
+      }
+      d.plankHistory = d.plankHistory || {};
+      d.plankHistory[key] = (d.plankHistory[key] || 0) + delta;
+      const cutoff = new Date(Date.now() - STEP_HISTORY_DAYS * 864e5).toISOString().slice(0, 10);
+      for (const k of Object.keys(d.plankHistory)) if (k < cutoff) delete d.plankHistory[k];
+    }
+    if (plank && typeof plank.sessions === 'number' && plank.sessions > (d.plankSessions || 0)) {
+      d.plankSessions = plank.sessions;
+    }
+    if (plank && typeof plank.bestMs === 'number' && plank.bestMs > (d.plankBestMs || 0)) {
+      d.plankBestMs = plank.bestMs;
     }
   });
   res.json({
@@ -722,6 +743,13 @@ app.get('/api/pushups', (req, res) => {
 app.get('/api/pullups', (req, res) => {
   const d = store.get();
   res.json({ total: d.pullupSessions || 0, history: d.pullupHistory || {} });
+});
+
+// Plank history + records for the dashboard panel.
+app.get('/api/plank', (req, res) => {
+  const d = store.get();
+  res.json({ totalSec: d.plankTotalSec || 0, sessions: d.plankSessions || 0,
+             bestMs: d.plankBestMs || 0, history: d.plankHistory || {} });
 });
 
 // Motion captures (detector tuning): raw uint16 little-endian milli-g

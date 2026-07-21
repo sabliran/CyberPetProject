@@ -463,6 +463,19 @@ static void pushDoneCB() {
   wifiSync.setPushSessions(pushSessions);
 }
 
+// Plank app: last/best hold + lifetime totals, NVS-backed; the totals ride
+// the sync request so the dashboard delta-records per-day plank analytics.
+static PlankState plankState;
+
+static void plankDoneCB(uint32_t heldMs) {
+  plankState.lastMs = heldMs;
+  if (heldMs > plankState.bestMs) plankState.bestMs = heldMs;
+  plankState.totalSec += heldMs / 1000;
+  plankState.sessions++;
+  storage.savePlankState(plankState);
+  wifiSync.setPlankInfo(plankState.totalSec, plankState.sessions, plankState.bestMs);
+}
+
 // Pull-up app: same pattern.
 static uint32_t pullupSessions = 0;
 
@@ -986,6 +999,10 @@ void setup() {
   ui.setFocusDoneCallback(focusDoneCB);
   focusSessions = storage.loadFocusSessions();
   wifiSync.setFocusSessions(focusSessions);
+  ui.setPlankDoneCB(plankDoneCB);
+  plankState = storage.loadPlankState();
+  ui.setPlankStats(plankState.lastMs, plankState.bestMs);
+  wifiSync.setPlankInfo(plankState.totalSec, plankState.sessions, plankState.bestMs);
   // Restore the last-synced quest/goal lists from NVS so they don't
   // vanish on reboot while waiting for the next sync.
   {
@@ -1462,6 +1479,7 @@ void loop() {
       bool inhibited = pocketMode || ui.isFocusRunning() || ui.isBackRunning() ||
                        ui.isPullupRunning() || ui.isCleanRunning() ||
                        ui.isHangRunning() ||  // a hold is 2 untouched minutes; don't dim mid-set
+                       ui.isPlankRunning() ||  // same: mid-plank there's no touch until the drop
                        ui.isSitRunning() ||  // a deep-sleeping device can't nag you to stand
                        ui.isMedRunning() ||  // meditation darkens its own screen; sleep would kill the timer
                        capPending ||

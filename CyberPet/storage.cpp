@@ -154,6 +154,19 @@ StepState Storage::loadStepState() {
   return s;
 }
 
+void Storage::savePlankState(const PlankState& s) {
+  PlankState cur = loadPlankState();
+  if (memcmp(&cur, &s, sizeof(PlankState)) == 0) return;
+  prefs.putBytes("plank", &s, sizeof(PlankState));
+}
+
+PlankState Storage::loadPlankState() {
+  PlankState s = {};
+  size_t len = prefs.getBytesLength("plank");
+  if (len == sizeof(PlankState)) prefs.getBytes("plank", &s, sizeof(PlankState));
+  return s;
+}
+
 void Storage::saveSleepState(const SleepState& s) {
   SleepState cur = loadSleepState();
   if (memcmp(&cur, &s, sizeof(SleepState)) == 0) return;

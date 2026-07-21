@@ -26,6 +26,17 @@ struct SleepState {
   int quality;   // 0 good, 1 medium, 2 bad
 };
 
+// Plank app: last/best hold shown on the device, plus lifetime totals the
+// sync request carries so the dashboard can delta-record per-day analytics.
+// No date stamp needed — totals are monotonic and best is a max. Zero-init
+// (= {}) matters for the change-guard memcmp, same as StepState.
+struct PlankState {
+  uint32_t lastMs;    // most recent recorded hold
+  uint32_t bestMs;    // all-time best hold
+  uint32_t totalSec;  // lifetime seconds held (server delta-records per day)
+  uint32_t sessions;  // lifetime recorded holds
+};
+
 // Record of the last abnormal reset (panic / watchdog / brownout), written at
 // the boot that follows the crash. `reason` holds the esp_reset_reason_t
 // value; `stage` is the setup() breadcrumb the crashed boot left behind
@@ -83,6 +94,10 @@ public:
   // Sleep app daily rating gate.
   void saveSleepState(const SleepState& s);
   SleepState loadSleepState();
+
+  // Plank app: last/best hold + lifetime totals (see PlankState).
+  void savePlankState(const PlankState& s);
+  PlankState loadPlankState();
 
   // Back-workout app: lifetime completed-session count (trophy fuel).
   void saveBackSessions(uint32_t n);

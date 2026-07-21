@@ -168,6 +168,8 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   cleanRunning = false; cleanStartMs = 0; cleanClockTimer = nullptr;
   hangStage = 0; hangRunning = false; hangStartMs = 0; hangClockTimer = nullptr;
   hangPassed[0] = hangPassed[1] = hangPassed[2] = false;
+  plankRunning = false; plankStartMs = 0; plankLastMs = 0; plankBestMs = 0;
+  plankClockTimer = nullptr;
   sitRunning = false; sitAlerting = false; sitIntervalMin = 20;
   sitStartMs = 0; sitLastChimeMs = 0; sitClockTimer = nullptr;
   medRunning = false; medDarkened = false; medIntervalMin = 10;
@@ -189,6 +191,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   buildPullupScreen();
   buildCleanScreen();
   buildHangScreen();
+  buildPlankScreen();
   buildSitScreen();
   buildMedScreen();
   buildSettingsScreen();
@@ -1511,6 +1514,7 @@ static const AppEntry APP_ENTRIES[] = {
   { LV_SYMBOL_UP,        "pull-ups", 0x60D080 },
   { LV_SYMBOL_DOWNLOAD,  "squats",   0xE87858 },
   { LV_SYMBOL_MINUS,     "hang",     0xA8E050 },
+  { LV_SYMBOL_BARS,      "plank",    0xE8A050 },
   { LV_SYMBOL_EYE_CLOSE, "sleep",    0xA080FF },
   { LV_SYMBOL_HOME,      "clean room", 0xE8B040 },
   { LV_SYMBOL_BELL,      "sit",      0x40C8D8 },
@@ -1615,18 +1619,21 @@ void PetUI::appsBtnCB(lv_event_t* e) {
       self->showHangScreen();
       break;
     case 6:
-      self->showSleepScreen();
+      self->showPlankScreen();
       break;
     case 7:
-      self->showCleanScreen();
+      self->showSleepScreen();
       break;
     case 8:
-      self->showSitScreen();
+      self->showCleanScreen();
       break;
     case 9:
-      self->showMedScreen();
+      self->showSitScreen();
       break;
     case 10:
+      self->showMedScreen();
+      break;
+    case 11:
       self->showTrophyScreen();
       break;
     default:
@@ -2743,6 +2750,208 @@ void PetUI::hangGestureCB(lv_event_t* e) {
   lv_indev_wait_release(lv_indev_get_act());
   self->hangRunning = false;
   if (self->hangClockTimer) { lv_timer_del(self->hangClockTimer); self->hangClockTimer = nullptr; }
+  self->showPetScreen();
+}
+
+/* ---- plank screen ----------------------------------------------------- */
+// Single isometric hold, the hang app's little sibling: tap anywhere to
+// start, tap again when you collapse. 1:00 banks the base reward, the full
+// 2:00 auto-completes with double. Unlike hang there's no ladder — instead
+// every real hold (>= PLANK_MIN_RECORD_MS) is remembered: last and best
+// ride PlankDoneCB to NVS and the dashboard's plank analytics.
+
+void PetUI::buildPlankScreen() {
+  plankScreen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(plankScreen, lv_color_hex(0x000000), 0);
+  lv_obj_clear_flag(plankScreen, LV_OBJ_FLAG_SCROLLABLE);
+  // Whole screen = start/stop control, same as hang: mid-plank the tap
+  // lands with a forearm, not a fingertip.
+  lv_obj_add_flag(plankScreen, LV_OBJ_FLAG_CLICKABLE);
+
+  lv_obj_t* title = lv_label_create(plankScreen);
+  lv_label_set_text(title, "PLANK");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xE8A050), 0);
+
+  plankStatsLabel = lv_label_create(plankScreen);
+  lv_label_set_text(plankStatsLabel, "no holds yet");
+  lv_obj_set_style_text_font(plankStatsLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(plankStatsLabel, lv_color_hex(0x8A6A38), 0);
+  lv_obj_align(plankStatsLabel, LV_ALIGN_TOP_MID, 0, 68);
+
+  // Fill-up ring toward the 2:00 target, same inverse-countdown as hang.
+  plankArc = lv_arc_create(plankScreen);
+  lv_obj_set_size(plankArc, 250, 250);
+  lv_obj_align(plankArc, LV_ALIGN_CENTER, 0, 24);
+  lv_arc_set_rotation(plankArc, 270);
+  lv_arc_set_bg_angles(plankArc, 0, 359);
+  lv_arc_set_range(plankArc, 0, 1000);
+  lv_arc_set_value(plankArc, 0);
+  lv_obj_set_style_arc_color(plankArc, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
+  lv_obj_set_style_arc_width(plankArc, 16, LV_PART_MAIN);
+  lv_obj_set_style_arc_color(plankArc, lv_color_hex(0xE8A050), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(plankArc, 16, LV_PART_INDICATOR);
+  lv_obj_set_style_opa(plankArc, LV_OPA_TRANSP, LV_PART_KNOB);
+  lv_obj_set_style_bg_opa(plankArc, LV_OPA_TRANSP, 0);
+  lv_obj_clear_flag(plankArc, LV_OBJ_FLAG_CLICKABLE);  // taps fall through to the screen
+
+  plankTimeLabel = lv_label_create(plankScreen);
+  lv_label_set_text(plankTimeLabel, "00:00");
+  lv_obj_set_style_text_font(plankTimeLabel, &lv_font_montserrat_32, 0);
+  lv_obj_set_style_text_color(plankTimeLabel, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(plankTimeLabel, LV_ALIGN_CENTER, 0, -2);
+
+  plankHintLabel = lv_label_create(plankScreen);
+  lv_label_set_text(plankHintLabel, "");
+  lv_obj_set_style_text_font(plankHintLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(plankHintLabel, lv_color_hex(0xA87838), 0);
+  lv_obj_set_style_text_align(plankHintLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(plankHintLabel, LV_ALIGN_CENTER, 0, 40);
+
+  plankRewardLabel = lv_label_create(plankScreen);
+  lv_label_set_text(plankRewardLabel, "");
+  lv_obj_set_style_text_font(plankRewardLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(plankRewardLabel, lv_color_hex(0x6A5228), 0);
+  lv_obj_set_style_text_align(plankRewardLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(plankRewardLabel, LV_ALIGN_CENTER, 0, 80);
+
+  lv_obj_t* hint = lv_label_create(plankScreen);
+  lv_label_set_text(hint, "swipe to close");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x2A2A44), 0);
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+
+  lv_obj_add_event_cb(plankScreen, plankTapCB, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(plankScreen, plankGestureCB, LV_EVENT_GESTURE, this);
+}
+
+void PetUI::plankRefreshStats() {
+  if (plankLastMs == 0 && plankBestMs == 0) {
+    lv_label_set_text(plankStatsLabel, "no holds yet");
+    return;
+  }
+  unsigned l = (unsigned)(plankLastMs / 1000), b = (unsigned)(plankBestMs / 1000);
+  lv_label_set_text_fmt(plankStatsLabel, "last %02u:%02u   best %02u:%02u",
+                        l / 60, l % 60, b / 60, b % 60);
+}
+
+void PetUI::setPlankStats(uint32_t lastMs, uint32_t bestMs) {
+  plankLastMs = lastMs;
+  plankBestMs = bestMs;
+  plankRefreshStats();
+}
+
+void PetUI::showPlankScreen() {
+  plankRunning = false;
+  if (plankClockTimer) { lv_timer_del(plankClockTimer); plankClockTimer = nullptr; }
+  // Same two-tier reward line as hang; snack numbers follow the difficulty.
+  int d = pet->getSettings().difficulty;
+  if (d < 0) d = 0;
+  if (d > 2) d = 2;
+  lv_label_set_text_fmt(plankRewardLabel,
+                        "1:00 gives: +%d xp, snack +%d food +%d mood\n2:00: double it all",
+                        PLANK_XP, DIFF_MEAL_HUNGER[d], DIFF_MEAL_MOOD[d]);
+  lv_arc_set_value(plankArc, 0);
+  lv_label_set_text(plankTimeLabel, "00:00");
+  lv_label_set_text(plankHintLabel, "tap to start the hold");
+  plankRefreshStats();
+  lv_scr_load_anim(plankScreen, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
+}
+
+// Session bookkeeping shared by the two ways a hold ends (tap-stop and the
+// 2:00 auto-complete). Mis-taps under PLANK_MIN_RECORD_MS don't count.
+void PetUI::plankRecord(uint32_t heldMs) {
+  if (heldMs < PLANK_MIN_RECORD_MS) return;
+  plankLastMs = heldMs;
+  if (heldMs > plankBestMs) plankBestMs = heldMs;
+  plankRefreshStats();
+  if (plankDoneCB) plankDoneCB(heldMs);
+}
+
+void PetUI::plankAward(int mult) {
+  int stageBefore = pet->getStage();
+  int levelBefore = pet->getLevel();
+  pet->addXP(PLANK_XP * mult);
+  for (int i = 0; i < mult; i++) pet->feedWorkout();
+  refreshPetScreen();
+  lv_area_t area;
+  lv_obj_get_coords(plankArc, &area);
+  showXpPopup(area, PLANK_XP * mult);
+  if (pet->getStage() > stageBefore) showEvolutionBurst();
+  else if (pet->getLevel() > levelBefore) showLevelUpPill(pet->getLevel());
+  if (soundCB) soundCB(SOUND_HABIT_DONE);
+}
+
+void PetUI::plankTapCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  // Swipes emit a CLICKED on release; same guard as the other app screens.
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+
+  if (!self->plankRunning) {
+    self->plankRunning = true;
+    self->plankStartMs = lv_tick_get();
+    lv_arc_set_value(self->plankArc, 0);
+    lv_label_set_text(self->plankTimeLabel, "00:00");
+    lv_label_set_text(self->plankHintLabel, "hold steady! tap when you drop");
+    if (!self->plankClockTimer)
+      self->plankClockTimer = lv_timer_create(plankClockCB, 250, self);
+    return;
+  }
+
+  // Dropped before 2:00. Past 1:00 the base reward is banked; under 1:00
+  // no snack, but the hold still goes on record (that's the point of the
+  // last/best line — progress you can see next session).
+  uint32_t held = lv_tick_get() - self->plankStartMs;
+  self->plankRunning = false;
+  if (self->plankClockTimer) { lv_timer_del(self->plankClockTimer); self->plankClockTimer = nullptr; }
+  self->plankRecord(held);
+  unsigned secs = (unsigned)(held / 1000);
+  if (held >= PLANK_PASS_MS) {
+    self->plankAward(1);
+    lv_label_set_text_fmt(self->plankHintLabel, "held %02u:%02u — snack earned! 2:00 doubles it",
+                          secs / 60, secs % 60);
+  } else {
+    lv_label_set_text_fmt(self->plankHintLabel, "dropped at %02u:%02u — 1:00 earns the snack",
+                          secs / 60, secs % 60);
+  }
+}
+
+void PetUI::plankClockCB(lv_timer_t* t) {
+  PetUI* self = (PetUI*)t->user_data;
+  if (!self->plankRunning) return;
+
+  uint32_t elapsed = lv_tick_get() - self->plankStartMs;
+  if (elapsed < PLANK_TARGET_MS) {
+    lv_arc_set_value(self->plankArc, (int)(elapsed * 1000 / PLANK_TARGET_MS));
+    unsigned secs = (unsigned)(elapsed / 1000);
+    lv_label_set_text_fmt(self->plankTimeLabel, "%02u:%02u", secs / 60, secs % 60);
+    // One-shot hint flip at 1:00, strcmp-guarded against the 250 ms tick.
+    static const char* SECURED = "snack banked! 2:00 doubles it";
+    if (elapsed >= PLANK_PASS_MS &&
+        strcmp(lv_label_get_text(self->plankHintLabel), SECURED) != 0)
+      lv_label_set_text(self->plankHintLabel, SECURED);
+    return;
+  }
+
+  // Full 2:00 held — auto-complete with the double reward.
+  self->plankRunning = false;
+  lv_timer_del(t);
+  self->plankClockTimer = nullptr;
+  self->plankRecord(PLANK_TARGET_MS);
+  self->plankAward(2);
+  lv_arc_set_value(self->plankArc, 1000);
+  lv_label_set_text(self->plankTimeLabel, "02:00");
+  lv_label_set_text(self->plankHintLabel, "full 2:00 plank! Koko feasts double");
+}
+
+void PetUI::plankGestureCB(lv_event_t* e) {
+  // Any swipe closes; a running hold is forfeited (no partial credit),
+  // matching hang — an abandoned screen shouldn't keep a timer alive.
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  self->lastGestureMs = lv_tick_get();
+  lv_indev_wait_release(lv_indev_get_act());
+  self->plankRunning = false;
+  if (self->plankClockTimer) { lv_timer_del(self->plankClockTimer); self->plankClockTimer = nullptr; }
   self->showPetScreen();
 }
 

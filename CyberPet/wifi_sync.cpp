@@ -146,6 +146,13 @@ void WifiSync::buildSyncRequest(Pet* pet, HabitTracker* tracker, String& out) {
   reqDoc["pullupSessions"] = pullupSessions_;
   reqDoc["focusSessions"] = focusSessions_;
 
+  // Plank analytics: lifetime totals; the server delta-records totalSec into
+  // per-day history (keyed by the steps date above) and keeps max of the rest.
+  JsonObject plankObj = reqDoc["plank"].to<JsonObject>();
+  plankObj["totalSec"] = plankTotalSec_;
+  plankObj["sessions"] = plankSessions_;
+  plankObj["bestMs"]   = plankBestMs_;
+
   // Sleep rating rides along once logged; keyed server-side by its own date.
   if (sleepQuality_ >= 0) {
     JsonObject sleepObj = reqDoc["sleep"].to<JsonObject>();
