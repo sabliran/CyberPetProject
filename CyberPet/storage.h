@@ -37,6 +37,14 @@ struct PlankState {
   uint32_t sessions;  // lifetime recorded holds
 };
 
+// Hang app: last/best hold PER STAGE (bar hang / scapula / L-sit) — the
+// stages are different exercises, so their records don't compare. Same
+// zero-init + memcmp-guard rules as PlankState.
+struct HangState {
+  uint32_t lastMs[3];
+  uint32_t bestMs[3];
+};
+
 // Record of the last abnormal reset (panic / watchdog / brownout), written at
 // the boot that follows the crash. `reason` holds the esp_reset_reason_t
 // value; `stage` is the setup() breadcrumb the crashed boot left behind
@@ -98,6 +106,10 @@ public:
   // Plank app: last/best hold + lifetime totals (see PlankState).
   void savePlankState(const PlankState& s);
   PlankState loadPlankState();
+
+  // Hang app: per-stage last/best holds (see HangState).
+  void saveHangState(const HangState& s);
+  HangState loadHangState();
 
   // Back-workout app: lifetime completed-session count (trophy fuel).
   void saveBackSessions(uint32_t n);

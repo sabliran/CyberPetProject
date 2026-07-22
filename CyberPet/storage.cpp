@@ -167,6 +167,19 @@ PlankState Storage::loadPlankState() {
   return s;
 }
 
+void Storage::saveHangState(const HangState& s) {
+  HangState cur = loadHangState();
+  if (memcmp(&cur, &s, sizeof(HangState)) == 0) return;
+  prefs.putBytes("hang", &s, sizeof(HangState));
+}
+
+HangState Storage::loadHangState() {
+  HangState s = {};
+  size_t len = prefs.getBytesLength("hang");
+  if (len == sizeof(HangState)) prefs.getBytes("hang", &s, sizeof(HangState));
+  return s;
+}
+
 void Storage::saveSleepState(const SleepState& s) {
   SleepState cur = loadSleepState();
   if (memcmp(&cur, &s, sizeof(SleepState)) == 0) return;

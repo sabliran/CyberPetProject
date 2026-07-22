@@ -30,9 +30,13 @@ static int vitality(Pet* pet) {
   return (pet->getHunger() + pet->getHealth() + pet->getMood()) / 3;
 }
 
-// Glide/step duration scale in percent of the stage base: vitality 100 ->
-// 80% (brisk), 50 -> 130%, 0 -> 180% (trudging).
-static int travelScalePct(Pet* pet) { return 180 - vitality(pet); }
+// Glide/step duration scale in percent of the stage base. Quadratic in the
+// deficit so the hungry end hurts the most: vitality 100 -> 60% (zippy),
+// 80 -> 69%, 50 -> 115%, 20 -> 201%, 0 -> 280% (barely crawling).
+static int travelScalePct(Pet* pet) {
+  int d = 100 - vitality(pet);
+  return 60 + d * d * 220 / 10000;
+}
 
 // Per-stage animation parameters — more evolved = more energy
 static const int BOUNCE_AMP_PX[]  = {4,   7,  11,  16};   // idle wobble amplitude
@@ -206,6 +210,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   hangStage = 0; hangRunning = false; hangStartMs = 0; hangClockTimer = nullptr;
   hangPassed[0] = hangPassed[1] = hangPassed[2] = false;
   plankRunning = false; plankStartMs = 0; plankLastMs = 0; plankBestMs = 0;
+  for (int i = 0; i < 3; i++) { hangLastMs[i] = 0; hangBestMs[i] = 0; }
   plankClockTimer = nullptr;
   sitRunning = false; sitAlerting = false; sitIntervalMin = 20;
   sitStartMs = 0; sitLastChimeMs = 0; sitClockTimer = nullptr;
@@ -2632,6 +2637,14 @@ void PetUI::buildHangScreen() {
     hangStageLbls[i] = lbl;
   }
 
+  // Selected stage's session memory — in the gap between the stage pills
+  // (which end at y 102) and the ring's top edge (y 138).
+  hangStatsLabel = lv_label_create(hangScreen);
+  lv_label_set_text(hangStatsLabel, "no holds yet");
+  lv_obj_set_style_text_font(hangStatsLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(hangStatsLabel, lv_color_hex(0x5A7A30), 0);
+  lv_obj_align(hangStatsLabel, LV_ALIGN_TOP_MID, 0, 110);
+
   // Fill-up ring: empty at 00:00, full at the 2:00 target (the inverse of
   // the countdown apps — a hold grows, a sprint drains).
   hangArc = lv_arc_create(hangScreen);
@@ -2703,6 +2716,37 @@ void PetUI::hangSelectStage(int s) {
   lv_label_set_text(hangTimeLabel, "00:00");
   lv_label_set_text_fmt(hangHintLabel, "%s to 2:00 — tap to start", HANG_NAMES[s]);
   hangRefreshStages();
+  hangRefreshStats();  // records are per stage — follow the selection
+}
+
+void PetUI::hangRefreshStats() {
+  if (hangLastMs[hangStage] == 0 && hangBestMs[hangStage] == 0) {
+    lv_label_set_text(hangStatsLabel, "no holds yet");
+    return;
+  }
+  unsigned l = (unsigned)(hangLastMs[hangStage] / 1000);
+  unsigned b = (unsigned)(hangBestMs[hangStage] / 1000);
+  lv_label_set_text_fmt(hangStatsLabel, "last %02u:%02u   best %02u:%02u",
+                        l / 60, l % 60, b / 60, b % 60);
+}
+
+void PetUI::setHangStats(const uint32_t lastMs[3], const uint32_t bestMs[3]) {
+  for (int i = 0; i < 3; i++) {
+    hangLastMs[i] = lastMs[i];
+    hangBestMs[i] = bestMs[i];
+  }
+  hangRefreshStats();
+}
+
+// Session bookkeeping shared by the two ways a hold ends (tap-stop and the
+// 2:00 auto-complete) — the plank's pattern, per stage. Mis-taps under
+// HANG_MIN_RECORD_MS don't count.
+void PetUI::hangRecord(uint32_t heldMs) {
+  if (heldMs < HANG_MIN_RECORD_MS) return;
+  hangLastMs[hangStage] = heldMs;
+  if (heldMs > hangBestMs[hangStage]) hangBestMs[hangStage] = heldMs;
+  hangRefreshStats();
+  if (hangDoneCB) hangDoneCB(hangStage, heldMs);
 }
 
 void PetUI::showHangScreen() {
@@ -2744,6 +2788,7 @@ void PetUI::hangTapCB(lv_event_t* e) {
   uint32_t held = lv_tick_get() - self->hangStartMs;
   self->hangRunning = false;
   if (self->hangClockTimer) { lv_timer_del(self->hangClockTimer); self->hangClockTimer = nullptr; }
+  self->hangRecord(held);
   unsigned secs = (unsigned)(held / 1000);
   if (held >= HANG_PASS_MS) {
     self->hangAward(1);
@@ -2811,6 +2856,7 @@ void PetUI::hangClockCB(lv_timer_t* t) {
   self->hangClockTimer = nullptr;
   int done = self->hangStage;
   self->hangPassed[done] = true;
+  self->hangRecord(HANG_TARGET_MS);  // before the stage selection moves on
   self->hangAward(2);
 
   if (done < 2) {

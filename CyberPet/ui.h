@@ -74,9 +74,10 @@ struct GoalInfo {
 // before 2:00; the full 2:00 pays DOUBLE everything and is what unlocks
 // the next stage (user spec, July 2026). Unlocks persist until reboot only
 // (deliberately no NVS — the progression is re-earned each gym session).
-#define HANG_PASS_MS   (1u * 60u * 1000u)  // base reward threshold
-#define HANG_TARGET_MS (2u * 60u * 1000u)  // double reward + unlock
-#define HANG_XP        15
+#define HANG_PASS_MS       (1u * 60u * 1000u)  // base reward threshold
+#define HANG_TARGET_MS     (2u * 60u * 1000u)  // double reward + unlock
+#define HANG_XP            15
+#define HANG_MIN_RECORD_MS 5000u  // shorter = a mis-tap, not a session
 
 // Plank app: single isometric hold, same tap-anywhere start/stop and 1:00 /
 // 2:00 reward tiers as the hang app. Every hold >= PLANK_MIN_RECORD_MS is
@@ -152,6 +153,11 @@ typedef void (*FocusDoneCB)(void);
 // persists last/best/lifetime totals to NVS and feeds them into the sync
 // request for the dashboard's plank analytics.
 typedef void (*PlankDoneCB)(uint32_t heldMs);
+
+// Hang app: fired when a hold ends (>= HANG_MIN_RECORD_MS). Stage-aware —
+// the three rungs are different exercises with separate records; the sketch
+// persists them per stage (HangState in storage).
+typedef void (*HangDoneCB)(int stage, uint32_t heldMs);
 
 // Device settings (swipe-up screen). Owned by the UI; the board sketch
 // registers the callback to persist them and apply the hardware-facing ones
@@ -268,6 +274,8 @@ public:
   // minutes and must not dim mid-set.
   void showHangScreen();
   bool isHangRunning() const { return hangRunning; }
+  void setHangDoneCB(HangDoneCB cb) { hangDoneCB = cb; }
+  void setHangStats(const uint32_t lastMs[3], const uint32_t bestMs[3]);
 
   // Plank app: tap anywhere to start/stop the hold; 1:00 = base reward,
   // 2:00 auto-completes with double. The sketch persists finished holds
@@ -477,11 +485,17 @@ private:
   lv_obj_t*   hangRewardLabel;
   lv_obj_t*   hangStageBtns[3];
   lv_obj_t*   hangStageLbls[3];
+  lv_obj_t*   hangStatsLabel;  // selected stage's "last M:SS · best M:SS"
   int         hangStage;       // selected: 0 hang, 1 scapula, 2 L-sit
   bool        hangPassed[3];   // stage i+1 unlocks when hangPassed[i]
   bool        hangRunning;
   uint32_t    hangStartMs;
+  uint32_t    hangLastMs[3];   // per stage, restored at boot via setHangStats
+  uint32_t    hangBestMs[3];
   lv_timer_t* hangClockTimer;
+  HangDoneCB  hangDoneCB = nullptr;  // deliberately NOT reset in init()
+  void hangRecord(uint32_t heldMs);  // update selected stage's last/best + fire hangDoneCB
+  void hangRefreshStats();
   void hangSelectStage(int s);
   void hangRefreshStages();  // pill styles: locked / unlocked / passed / selected
   void hangAward(int mult);  // XP + snacks ×mult, popup, level/stage celebration

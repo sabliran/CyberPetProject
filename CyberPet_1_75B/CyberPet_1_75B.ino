@@ -476,6 +476,16 @@ static void plankDoneCB(uint32_t heldMs) {
   wifiSync.setPlankInfo(plankState.totalSec, plankState.sessions, plankState.bestMs);
 }
 
+// Hang app: per-stage last/best (bar hang / scapula / L-sit), NVS-backed.
+static HangState hangState;
+
+static void hangDoneCB(int stage, uint32_t heldMs) {
+  if (stage < 0 || stage > 2) return;
+  hangState.lastMs[stage] = heldMs;
+  if (heldMs > hangState.bestMs[stage]) hangState.bestMs[stage] = heldMs;
+  storage.saveHangState(hangState);
+}
+
 // Pull-up app: same pattern.
 static uint32_t pullupSessions = 0;
 
@@ -1003,6 +1013,9 @@ void setup() {
   plankState = storage.loadPlankState();
   ui.setPlankStats(plankState.lastMs, plankState.bestMs);
   wifiSync.setPlankInfo(plankState.totalSec, plankState.sessions, plankState.bestMs);
+  ui.setHangDoneCB(hangDoneCB);
+  hangState = storage.loadHangState();
+  ui.setHangStats(hangState.lastMs, hangState.bestMs);
   // Restore the last-synced quest/goal lists from NVS so they don't
   // vanish on reboot while waiting for the next sync.
   {
