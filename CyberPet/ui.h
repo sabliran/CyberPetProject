@@ -372,6 +372,8 @@ private:
   lv_timer_t* blinkTimer;
   lv_timer_t* walkAnimTimer;   // flips walk frames while gliding; null when idle
   bool        walkFrameB;
+  bool        walkMirrored;    // current glide moves right -> body-mirrored frames
+  bool        walkAway;        // current glide shrinks depth -> back view, eyes hidden
   int         depthZoom;       // resting image zoom (256 = 100%); roams pick a new depth
 
   // habit screen widgets

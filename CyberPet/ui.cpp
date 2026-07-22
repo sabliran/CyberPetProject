@@ -17,9 +17,9 @@ static lv_color_t stageColor(int stage) {
 static int stageSize(int stage) {
   switch (stage) {
     case STAGE_EGG:      return 80;
-    case STAGE_BLOB:     return 110;
-    case STAGE_CREATURE: return 140;
-    case STAGE_EVOLVED:  return 170;
+    case STAGE_BLOB:     return 165;
+    case STAGE_CREATURE: return 205;
+    case STAGE_EVOLVED:  return 245;
     default: return 100;
   }
 }
@@ -62,12 +62,11 @@ static void animSetZoom(void* obj, int32_t v) { lv_img_set_zoom((lv_obj_t*)obj, 
 
 // Announce the zoom-puff overflow as extra draw area. Without this LVGL only
 // erases the widget box when the blob moves, leaving ghost copies of the
-// overflowing zoomed pixels behind. 24 px covers the max puff overflow
-// (170 px sprite * 12.5% / 2 ≈ 11 px) with margin.
+// overflowing zoomed pixels behind.
 static void blobExtDrawCB(lv_event_t* e) {
   // Must cover the deepest zoom-in (129%) plus the pat puff on top of it
-  // (112% of that ≈ 145%): 170 px sprite * 45% / 2 ≈ 39 px of overflow.
-  lv_event_set_ext_draw_size(e, 48);
+  // (112% of that ≈ 145%): 245 px sprite * 45% / 2 ≈ 55 px of overflow.
+  lv_event_set_ext_draw_size(e, 64);
 }
 
 // Body sprite per evolution stage (pixel art, body only — eyes on top).
@@ -82,13 +81,29 @@ static const lv_img_dsc_t* stageSprite(int stage) {
 
 // Walk frames: the animation alternates left-foot-up / right-foot-up so
 // both legs step. The egg has no legs and glides on its single frame.
-static const lv_img_dsc_t* stageWalkSprite(int stage, bool rightFoot) {
-  switch (stage) {
-    case STAGE_EGG:      return &sprite_egg;
-    case STAGE_BLOB:     return rightFoot ? &sprite_blob_walk2     : &sprite_blob_walk1;
-    case STAGE_CREATURE: return rightFoot ? &sprite_creature_walk2 : &sprite_creature_walk1;
-    default:             return rightFoot ? &sprite_evolved_walk2  : &sprite_evolved_walk1;
-  }
+// The body sway in the walk art trails the movement, so rightward glides
+// use the body-mirrored r frames; glides that shrink the depth zoom show
+// the back view (the head is identical within each view).
+static const lv_img_dsc_t* stageWalkSprite(int stage, bool rightFoot,
+                                           bool movingRight, bool movingAway) {
+  // [stage][away][mirrored][frame]
+  static const lv_img_dsc_t* const T[3][2][2][2] = {
+    {{{&sprite_blob_walk1,      &sprite_blob_walk2},
+      {&sprite_blob_walk1r,     &sprite_blob_walk2r}},
+     {{&sprite_blob_back1,      &sprite_blob_back2},
+      {&sprite_blob_back1r,     &sprite_blob_back2r}}},
+    {{{&sprite_creature_walk1,  &sprite_creature_walk2},
+      {&sprite_creature_walk1r, &sprite_creature_walk2r}},
+     {{&sprite_creature_back1,  &sprite_creature_back2},
+      {&sprite_creature_back1r, &sprite_creature_back2r}}},
+    {{{&sprite_evolved_walk1,   &sprite_evolved_walk2},
+      {&sprite_evolved_walk1r,  &sprite_evolved_walk2r}},
+     {{&sprite_evolved_back1,   &sprite_evolved_back2},
+      {&sprite_evolved_back1r,  &sprite_evolved_back2r}}},
+  };
+  if (stage == STAGE_EGG) return &sprite_egg;
+  int s = (stage == STAGE_BLOB) ? 0 : (stage == STAGE_CREATURE) ? 1 : 2;
+  return T[s][movingAway][movingRight][rightFoot];
 }
 static void animSetGlow(void* obj, int32_t v) {
   lv_obj_set_style_shadow_spread((lv_obj_t*)obj, (lv_coord_t)v, 0);
@@ -128,18 +143,22 @@ static void roamArrivalCB(lv_anim_t* a) {
 // eyes with the body: image zoom only scales the bitmap, not child objects.
 static int g_depthZoom = 256;
 
-// Eye dimensions snap to the sprites' 5 px pixel grid so every expression
+// Eye dimensions snap to the current sprite's pixel grid so every expression
 // (squint, surprise, blink) stays chunky pixel-art instead of smoothly
 // interpolated. A closed-eye blink becomes a one-sprite-pixel bar.
+// The Smol sprites are the same 32x40 art at 2x/3x/4x per stage, so the
+// grid is stage-dependent (set in refreshPetScreen alongside the eye layout).
 // Everything scales by the depth zoom so the eyes shrink/grow (and stay on
-// the face) as the pet wanders nearer or farther.
+// the TV screen) as the pet wanders nearer or farther.
+static int g_eyeGrid = 2;
+
 static void placeEye(lv_obj_t* eye, lv_coord_t cx, lv_coord_t cy, int w, int h) {
   cx = cx * g_depthZoom / 256;
   cy = cy * g_depthZoom / 256;
   w  = w  * g_depthZoom / 256;
   h  = h  * g_depthZoom / 256;
-  w = LV_MAX(5, (w / 5) * 5);
-  h = LV_MAX(5, (h / 5) * 5);
+  w = LV_MAX(g_eyeGrid, (w / g_eyeGrid) * g_eyeGrid);
+  h = LV_MAX(g_eyeGrid, (h / g_eyeGrid) * g_eyeGrid);
   lv_obj_set_size(eye, w, h);
   lv_obj_align(eye, LV_ALIGN_CENTER, cx, cy);
 }
@@ -151,7 +170,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   tracker  = trackerPtr;
   roamTimer = nullptr;
   blinkTimer = nullptr;
-  walkAnimTimer = nullptr; walkFrameB = false;
+  walkAnimTimer = nullptr; walkFrameB = false; walkMirrored = false; walkAway = false;
   depthZoom = 256; g_depthZoom = 256;
   sedentaryActive  = false;
   sedentaryTimer   = nullptr;
@@ -231,16 +250,18 @@ void PetUI::buildPetScreen() {
 
   eyeLeft  = lv_obj_create(blobShape);
   eyeRight = lv_obj_create(blobShape);
-  makeCircle(eyeLeft,  lv_color_hex(0x0A0A0A));
-  makeCircle(eyeRight, lv_color_hex(0x0A0A0A));
-  // One light glint pixel per eye (top-left, one sprite-pixel of 5 px):
-  // the detail that makes a black rectangle read as a drawn pixel eye.
+  // CRT-cyan (from Smol's own static/cape palette): the eyes render on the
+  // black TV screen of the Smol sprite, so they glow instead of absorb.
+  makeCircle(eyeLeft,  lv_color_hex(0x00CDF9));
+  makeCircle(eyeRight, lv_color_hex(0x00CDF9));
+  // One light glint pixel per eye (top-left): the detail that makes a flat
+  // rectangle read as a drawn pixel eye — here it doubles as CRT shine.
   // Children clip to the eye, so blinks/squints swallow it naturally.
   for (lv_obj_t* eye : { eyeLeft, eyeRight }) {
     lv_obj_t* glint = lv_obj_create(eye);
-    lv_obj_set_size(glint, 5, 5);
+    lv_obj_set_size(glint, 3, 3);
     lv_obj_set_style_radius(glint, 0, 0);
-    lv_obj_set_style_bg_color(glint, lv_color_hex(0xD8DEE8), 0);
+    lv_obj_set_style_bg_color(glint, lv_color_hex(0xD8F4FF), 0);
     lv_obj_set_style_bg_opa(glint, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(glint, 0, 0);
     lv_obj_set_style_pad_all(glint, 0, 0);
@@ -771,10 +792,14 @@ void PetUI::refreshPetScreen() {
   // box (round-rect), which clashes with the sprite silhouette.
   lv_obj_set_style_shadow_opa(blobShape, LV_OPA_TRANSP, 0);
 
-  // Eye layout (relative to current blob size)
-  eyeOffX  = sz / 5;  // was sz*3/10 — closer-set eyes suit the sprite faces
+  // Eye layout: the eyes live on Smol's TV screen. gen_sprites.py pins the
+  // screen center at (sz/2, sz*2/5), i.e. -sz/10 from widget center — these
+  // offsets/sizes keep every expression (surprise 1.5x + drift) inside the
+  // screen at all three scales; the tightest fit is the blob stage.
+  eyeOffX  = sz / 20;
   eyeOffY  = -(sz / 10);
-  eyeBaseW = sz / 8;  // was sz/5 — smaller suits the pixel-art faces
+  eyeBaseW = sz / 16;
+  g_eyeGrid = (sz >= 245) ? 6 : (sz >= 205) ? 5 : 4;  // Smol art scale (egg lands on 4)
 
   applyMoodExpression();
   startBlobAnimations();
@@ -929,6 +954,19 @@ void PetUI::roamToRandom() {
   // 66%..129%). Coming in close = walking toward the viewer.
   int targetDepth = 170 + rand() % 160;
 
+  // A glide that clearly shrinks the depth is walking AWAY: show the back
+  // view and hide the eyes (no face back there). The threshold keeps small
+  // depth wobbles from flashing the back for a barely-receding glide.
+  // The egg has no back view — it keeps its face (and eyes) at any depth.
+  walkAway = stage != STAGE_EGG && targetDepth + 25 < depthZoom;
+  if (walkAway) {
+    lv_obj_add_flag(eyeLeft,  LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(eyeRight, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_clear_flag(eyeLeft,  LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(eyeRight, LV_OBJ_FLAG_HIDDEN);
+  }
+
   // Eye drift: shift eyes toward the direction of movement — unless the
   // pet is coming up close, in which case it looks straight at the viewer.
   int dx = targetX - curX;
@@ -939,8 +977,11 @@ void PetUI::roamToRandom() {
   if (targetDepth >= 280) {
     eyeDriftX = eyeDriftY = 0;   // looking at you
   } else if (dist > 4) {
-    eyeDriftX = (lv_coord_t)(dx * 7 / dist);
-    eyeDriftY = (lv_coord_t)(dy * 7 / dist);
+    // Drift scales with stage: ±7 px would walk the eyes off the blob
+    // stage's 28 px-wide TV screen.
+    int driftMax = LV_MAX(2, stageSize(stage) / 40);
+    eyeDriftX = (lv_coord_t)(dx * driftMax / dist);
+    eyeDriftY = (lv_coord_t)(dy * driftMax / dist);
   } else {
     eyeDriftX = eyeDriftY = 0;
   }
@@ -983,11 +1024,16 @@ void PetUI::roamToRandom() {
   lv_anim_set_user_data(&a, this);
   lv_anim_start(&a);
 
-  // Walk cycle while traveling: flip between the base and alternate-feet
-  // frames. Killed on arrival (startIdleWobble restores the base frame).
+  // Walk cycle while traveling: flip between the two walk poses. Killed on
+  // arrival (startIdleWobble restores the base frame). A pure-vertical
+  // glide keeps the previous direction rather than snapping the sway.
+  if (dx != 0) walkMirrored = dx > 0;
   if (walkAnimTimer) { lv_timer_del(walkAnimTimer); walkAnimTimer = nullptr; }
   walkFrameB = false;
   walkAnimTimer = lv_timer_create(walkFrameCB, 160, this);
+  // Turn around NOW, not at the first 160ms frame flip — an eyeless front
+  // view (or a back view with eyes) must never be shown.
+  lv_img_set_src(blobShape, stageWalkSprite(stage, walkFrameB, walkMirrored, walkAway));
 }
 
 void PetUI::animSetDepth(void* petui, int32_t v) {
@@ -1001,16 +1047,21 @@ void PetUI::walkFrameCB(lv_timer_t* t) {
   PetUI* self = (PetUI*)t->user_data;
   int stage = self->pet->getStage();
   self->walkFrameB = !self->walkFrameB;
-  lv_img_set_src(self->blobShape, stageWalkSprite(stage, self->walkFrameB));
+  lv_img_set_src(self->blobShape,
+                 stageWalkSprite(stage, self->walkFrameB, self->walkMirrored, self->walkAway));
 }
 
 void PetUI::startIdleWobble() {
   int stage = pet->getStage();
   int sz    = stageSize(stage);
 
-  // Landed: stop the walk cycle on the base frame.
+  // Landed: stop the walk cycle on the base frame. Arrival always faces
+  // the viewer again, so the back view ends and the eyes come back.
   if (walkAnimTimer) { lv_timer_del(walkAnimTimer); walkAnimTimer = nullptr; }
   walkFrameB = false;
+  walkAway = false;
+  lv_obj_clear_flag(eyeLeft,  LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(eyeRight, LV_OBJ_FLAG_HIDDEN);
   lv_img_set_src(blobShape, stageSprite(stage));
 
   // Settle at the roam's resting depth in case an anim didn't finish
