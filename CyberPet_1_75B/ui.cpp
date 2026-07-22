@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "sprites.h"
 #include "sprite_layout.h"  // generated per-stage canvas sizes + eye anchors
+#include "dict_ui.h"        // dictionary app (pet-screen swipe-down slot)
 #include <cstdlib>
 
 // Stage colors - used for the evolution burst particles. The blob body itself
@@ -1597,8 +1598,8 @@ void PetUI::petGestureCB(lv_event_t* e) {
       self->showSettingsScreen();
       break;
     case LV_DIR_BOTTOM:
-      self->pomState = POM_IDLE;  // always start fresh from the pet screen
-      self->showPomodoroScreen();
+      // Dictionary took this slot from Focus (now an apps-menu entry).
+      showDictScreen();
       break;
     default:
       break;
@@ -1635,9 +1636,9 @@ struct AppEntry {
   const char* name;
   uint32_t    color;
 };
-// Focus is deliberately absent: it has a dedicated swipe on the pet screen
-// (down); the menu is for apps that don't. (The old tap-counting workout app
-// was removed July 2026 — the IMU-counted back/pull-up apps replaced it.)
+// Focus moved in from its old pet-screen swipe-down slot (the dictionary
+// holds that swipe now). (The old tap-counting workout app was removed
+// July 2026 — the IMU-counted back/pull-up apps replaced it.)
 static const AppEntry APP_ENTRIES[] = {
   { LV_SYMBOL_GPS,       "walk",     0x50A8E8 },
   { LV_SYMBOL_REFRESH,   "back",     0xFFA050 },
@@ -1651,6 +1652,7 @@ static const AppEntry APP_ENTRIES[] = {
   { LV_SYMBOL_BELL,      "sit",      0x40C8D8 },
   { LV_SYMBOL_TINT,      "meditate", 0x60C8A8 },
   { LV_SYMBOL_OK,        "trophies", 0xFFD060 },
+  { LV_SYMBOL_EYE_OPEN,  "focus",    0xE87030 },
 };
 static const int APP_COUNT = sizeof(APP_ENTRIES) / sizeof(APP_ENTRIES[0]);
 
@@ -1677,8 +1679,10 @@ void PetUI::buildAppsScreen() {
   // 314 px tall keeps the top row's button corners inside the 233 px radius.
   // 6 rows shrink again to 48: 6×48+5×6 = 318 px tall, and the top row's
   // outer corners sit at ~228 px from center — just inside the glass.
-  const int  bw = 160, bh = (rows > 5) ? 48 : (rows > 4) ? 58 : 68,
-             gx = 8, gy = (rows > 4) ? 6 : 8;
+  // 7 rows (13 apps since focus joined): 40-tall cells, 7×40+6×5 = 310 px;
+  // outer corners √(164²+155²) ≈ 226 px from center — inside the glass.
+  const int  bw = 160, bh = (rows > 6) ? 40 : (rows > 5) ? 48 : (rows > 4) ? 58 : 68,
+             gx = 8, gy = (rows > 6) ? 5 : (rows > 4) ? 6 : 8;
   const int  btnH = 72, gap = 20, pitch = btnH + gap;  // single-column sizes
   for (int i = 0; i < APP_COUNT; i++) {
     lv_obj_t* btn = lv_btn_create(appsScreen);
@@ -1766,6 +1770,10 @@ void PetUI::appsBtnCB(lv_event_t* e) {
       break;
     case 11:
       self->showTrophyScreen();
+      break;
+    case 12:
+      self->pomState = POM_IDLE;  // always start fresh (same as the old swipe)
+      self->showPomodoroScreen();
       break;
     default:
       break;
@@ -4368,7 +4376,7 @@ void PetUI::pomCancelBtnCB(lv_event_t* e) {
   self->pomRunning = false;
   self->pomState   = POM_IDLE;
   if (self->pomClockTimer) { lv_timer_del(self->pomClockTimer); self->pomClockTimer = nullptr; }
-  // Back to the pet screen (focus is entered from there by swipe-down).
+  // Back to the pet screen, like the other menu apps' exits.
   lv_scr_load_anim(self->petScreen, LV_SCR_LOAD_ANIM_MOVE_TOP, 200, 0, false);
   self->refreshPetScreen();
 }

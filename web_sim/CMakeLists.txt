@@ -18,9 +18,13 @@ set(FW_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../CyberPet)
 
 add_executable(cyberpet_sim
   main_web.cpp
+  dict_backend_stdio.cpp
   ${FW_DIR}/pet.cpp
   ${FW_DIR}/habits.cpp
   ${FW_DIR}/ui.cpp
+  ${FW_DIR}/sprites.c
+  ${FW_DIR}/dict.cpp
+  ${FW_DIR}/dict_ui.cpp
 )
 
 target_include_directories(cyberpet_sim PRIVATE

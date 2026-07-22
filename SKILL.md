@@ -258,9 +258,10 @@ Trophies are computed server-side (`computeTrophies` in server.js — pure
 function of completionLog/stepHistory/sleepHistory/petState, nothing
 persisted) and follow the quests/goals device contract exactly: earned names
 ride the sync response, `WifiSync::getTrophies` → `ui.setTrophies` →
-NVS-cached via `Storage::saveTrophies` for reboot survival. Workout and
-focus are deliberately not in the menu — they keep their pet-screen swipes
-(up / down).
+NVS-cached via `Storage::saveTrophies` for reboot survival. Focus joined
+the menu in July 2026 when the dictionary app took over the pet screen's
+swipe-down slot (dict_ui.cpp — swipe up or its back chain exits); settings
+keeps its swipe (up).
 
 The sleep app asks "how did you sleep?" once per day (good/medium/bad →
 `Pet::logSleep`: good +12 mood +8 hunger, medium +5/+3, bad −15 xp −10 mood

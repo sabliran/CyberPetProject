@@ -8,6 +8,8 @@
     m     - toggle dev menu overlay
     space - count a rep (when workout screen is running)
     p     - simulate IMU pickup during Pomodoro focus (guilt-trip flash)
+    g     - open/close the dictionary app (wheel -> list -> definition;
+            needs tools/dict_out generated - see tools/make_dict.py)
 */
 
 #include <SDL2/SDL.h>
@@ -15,6 +17,7 @@
 #include "pet.h"
 #include "habits.h"
 #include "ui.h"
+#include "dict_ui.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -294,6 +297,13 @@ static void handle_sdl_events() {
             break;
           case SDLK_a:
             ui.showAppsMenu();  // stands in for the board's physical button
+            break;
+          case SDLK_g:
+            // Dictionary toggle. The real navigation is the pet screen's
+            // swipe-down (mouse-drag down); this shortcut stays as a way to
+            // open it from any screen without swiping.
+            if (dictScreenActive()) hideDictScreen();
+            else                    showDictScreen();
             break;
         }
         break;

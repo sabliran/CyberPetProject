@@ -31,6 +31,8 @@
 #include "ESP_I2S.h"
 #include "esp_check.h"
 #include "es8311.h"   // codec driver bundled from Waveshare's example 08
+#include <FS.h>
+#include <SD_MMC.h>   // TF card, SDMMC 1-bit mode (Waveshare example 07)
 #include <math.h>
 
 #include "pet.h"
@@ -792,6 +794,40 @@ static void enterAutoSleep() {
 
 static void lvglTickCB(void* arg) { lv_tick_inc(2); }
 
+// ── SD (TF) card — dictionary data in later phases ─────────────────────────
+// Init sequence from Waveshare's 07_LVGL_SD_Test example: SDMMC 1-bit mode,
+// SD_MMC.setPins(CLK, CMD, DATA) then SD_MMC.begin("/sdcard", true). The
+// SDMMC_CS pin in pin_config.h is defined but unused — their example never
+// touches it either (1-bit SDMMC has no chip select).
+// ⚠ From the plain-1.75 example repo, compile-verified only — untested on
+// the B hardware until first boot (same caveat as display/touch above).
+static bool sdAvailable = false;
+
+// One-shot boot smoke test (dictionary phase 1 only): write a scratch file,
+// read it back, report PASS/FAIL + card size on Serial, delete it. Goes away
+// once the real /dict/ reader lands.
+static void sdSmokeTest() {
+  const char* path    = "/cyberpet_sd_test.txt";
+  const char* payload = "cyberpet sd smoke test";
+  bool pass = false;
+  File f = SD_MMC.open(path, FILE_WRITE);
+  if (f) {
+    f.println(payload);
+    f.close();
+    f = SD_MMC.open(path, FILE_READ);
+    if (f) {
+      String line = f.readStringUntil('\n');
+      f.close();
+      line.trim();  // println appends \r\n
+      pass = line.equals(payload);
+    }
+  }
+  SD_MMC.remove(path);
+  Serial.printf("SD smoke test: %s - card %llu MB\n",
+                pass ? "PASS" : "FAIL",
+                SD_MMC.cardSize() / (1024ULL * 1024ULL));
+}
+
 void setup() {
   // USB sync bridge sends ~1 KB responses in one burst; the HWCDC default
   // RX buffer (256 B) would overflow. Must be set before Serial.begin().
@@ -1019,6 +1055,17 @@ void setup() {
   esp_timer_handle_t tick_timer;
   ESP_ERROR_CHECK(esp_timer_create(&tick_args, &tick_timer));
   ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer, 2 * 1000));
+
+  // SD (TF) card mount — Waveshare 07_LVGL_SD_Test sequence (see sdSmokeTest
+  // block above setup for provenance). Non-fatal: no card / mount failure
+  // logs once and the pet runs unaffected.
+  SD_MMC.setPins(SDMMC_CLK, SDMMC_CMD, SDMMC_DATA);
+  if (SD_MMC.begin("/sdcard", true) && SD_MMC.cardType() != CARD_NONE) {
+    sdAvailable = true;
+    sdSmokeTest();
+  } else {
+    Serial.println("SD: mount failed or no card - continuing without SD");
+  }
 
   PetState savedPet = storage.loadPet();
   pet.init(savedPet);

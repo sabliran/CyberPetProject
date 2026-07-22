@@ -13,3 +13,7 @@ node_modules/
 CyberPet_1_75B/secrets.h
 CyberPet_1_43C/secrets.h
 __pycache__/
+
+# dictionary build artifacts (26 MB generated; rerun tools/make_dict.py)
+tools/dict_out/
+tools/.venv-dict/
