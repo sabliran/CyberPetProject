@@ -1,5 +1,6 @@
 #include "ui.h"
 #include "sprites.h"
+#include "sprite_layout.h"  // generated per-stage canvas sizes + eye anchors
 #include <cstdlib>
 
 // Stage colors - used for the evolution burst particles. The blob body itself
@@ -14,15 +15,24 @@ static lv_color_t stageColor(int stage) {
   }
 }
 
-static int stageSize(int stage) {
-  switch (stage) {
-    case STAGE_EGG:      return 80;
-    case STAGE_BLOB:     return 165;
-    case STAGE_CREATURE: return 205;
-    case STAGE_EVOLVED:  return 245;
-    default: return 100;
-  }
+// Sprite canvases are trimmed to the art (rectangular, not square) — all
+// per-stage geometry lives in the generated SPRITE_LAYOUT table.
+static const SpriteLayout& stageLayout(int stage) {
+  return SPRITE_LAYOUT[(stage >= 0 && stage < 4) ? stage : STAGE_BLOB];
 }
+
+// Vitality 0..100 — the average of hunger, health and mood. A fed, healthy,
+// happy pet zips around; a neglected one trudges. Scales every roam timing:
+// glide speed, step cadence, and how often the pet bothers to move at all.
+// (Mood is already hunger-capped in Pet, so hunger weighs in twice — that's
+// fine, an empty stomach SHOULD slow it down the most.)
+static int vitality(Pet* pet) {
+  return (pet->getHunger() + pet->getHealth() + pet->getMood()) / 3;
+}
+
+// Glide/step duration scale in percent of the stage base: vitality 100 ->
+// 80% (brisk), 50 -> 130%, 0 -> 180% (trudging).
+static int travelScalePct(Pet* pet) { return 180 - vitality(pet); }
 
 // Per-stage animation parameters — more evolved = more energy
 static const int BOUNCE_AMP_PX[]  = {4,   7,  11,  16};   // idle wobble amplitude
@@ -82,28 +92,36 @@ static const lv_img_dsc_t* stageSprite(int stage) {
 // Walk frames: the animation alternates left-foot-up / right-foot-up so
 // both legs step. The egg has no legs and glides on its single frame.
 // The body sway in the walk art trails the movement, so rightward glides
-// use the body-mirrored r frames; glides that shrink the depth zoom show
-// the back view (the head is identical within each view).
+// use the body-mirrored r frames. View: front for toward/diagonal glides,
+// back when the depth zoom shrinks, side profile for mostly-horizontal
+// glides (the head is identical within each view; back has no mirror —
+// near-symmetric from behind).
 static const lv_img_dsc_t* stageWalkSprite(int stage, bool rightFoot,
-                                           bool movingRight, bool movingAway) {
-  // [stage][away][mirrored][frame]
-  static const lv_img_dsc_t* const T[3][2][2][2] = {
+                                           bool movingRight, int view) {
+  // [stage][view][mirrored][frame]
+  static const lv_img_dsc_t* const T[3][3][2][2] = {
     {{{&sprite_blob_walk1,      &sprite_blob_walk2},
       {&sprite_blob_walk1r,     &sprite_blob_walk2r}},
      {{&sprite_blob_back1,      &sprite_blob_back2},
-      {&sprite_blob_back1r,     &sprite_blob_back2r}}},
+      {&sprite_blob_back1,      &sprite_blob_back2}},
+     {{&sprite_blob_side1,      &sprite_blob_side2},
+      {&sprite_blob_side1r,     &sprite_blob_side2r}}},
     {{{&sprite_creature_walk1,  &sprite_creature_walk2},
       {&sprite_creature_walk1r, &sprite_creature_walk2r}},
      {{&sprite_creature_back1,  &sprite_creature_back2},
-      {&sprite_creature_back1r, &sprite_creature_back2r}}},
+      {&sprite_creature_back1,  &sprite_creature_back2}},
+     {{&sprite_creature_side1,  &sprite_creature_side2},
+      {&sprite_creature_side1r, &sprite_creature_side2r}}},
     {{{&sprite_evolved_walk1,   &sprite_evolved_walk2},
       {&sprite_evolved_walk1r,  &sprite_evolved_walk2r}},
      {{&sprite_evolved_back1,   &sprite_evolved_back2},
-      {&sprite_evolved_back1r,  &sprite_evolved_back2r}}},
+      {&sprite_evolved_back1,   &sprite_evolved_back2}},
+     {{&sprite_evolved_side1,   &sprite_evolved_side2},
+      {&sprite_evolved_side1r,  &sprite_evolved_side2r}}},
   };
   if (stage == STAGE_EGG) return &sprite_egg;
   int s = (stage == STAGE_BLOB) ? 0 : (stage == STAGE_CREATURE) ? 1 : 2;
-  return T[s][movingAway][movingRight][rightFoot];
+  return T[s][view][movingRight][rightFoot];
 }
 static void animSetGlow(void* obj, int32_t v) {
   lv_obj_set_style_shadow_spread((lv_obj_t*)obj, (lv_coord_t)v, 0);
@@ -170,7 +188,7 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   tracker  = trackerPtr;
   roamTimer = nullptr;
   blinkTimer = nullptr;
-  walkAnimTimer = nullptr; walkFrameB = false; walkMirrored = false; walkAway = false;
+  walkAnimTimer = nullptr; walkFrameB = false; walkMirrored = false; walkView = WALK_FRONT;
   depthZoom = 256; g_depthZoom = 256;
   sedentaryActive  = false;
   sedentaryTimer   = nullptr;
@@ -647,7 +665,7 @@ void PetUI::blobLoveReaction() {
   // lands mid-puff would read the inflated width and each spam-tap would
   // ratchet the blob (and its glow shadow) bigger until the shadow draw
   // buffer exhausts LVGL's memory pool and crashes the device.
-  lv_coord_t sz = stageSize(pet->getStage());
+  lv_coord_t sz = stageLayout(pet->getStage()).w;
   lv_anim_del(blobShape, (lv_anim_exec_xcb_t)animSetZoom);
   lv_img_set_zoom(blobShape, depthZoom);  // snap back to resting depth before re-puffing
   lv_anim_t a;
@@ -773,33 +791,33 @@ void PetUI::syncOverlayDeleteCB(lv_anim_t* a) {
 
 void PetUI::refreshPetScreen() {
   int stage = pet->getStage();
-  int sz    = stageSize(stage);
+  const SpriteLayout& L = stageLayout(stage);
 
   // On first call, place blob at screen center and seed blobBaseX/Y.
   // On subsequent calls keep the current roam position.
   if (blobBaseX < 0) {
     lv_coord_t pW = lv_obj_get_width(petScreen);
     lv_coord_t pH = lv_obj_get_height(petScreen);
-    blobBaseX = (pW - sz) / 2;
-    blobBaseY = (pH - sz) / 2 - 40;
+    blobBaseX = (pW - L.w) / 2;
+    blobBaseY = (pH - L.h) / 2 - 40;
     lv_obj_set_pos(blobShape, blobBaseX, blobBaseY);
   }
 
   lv_img_set_src(blobShape, stageSprite(stage));
-  lv_obj_set_size(blobShape, sz, sz);  // sprites are authored at exactly stageSize
+  lv_obj_set_size(blobShape, L.w, L.h);  // canvases are trimmed to the art
 
-  // No glow on the pixel-art sprites: the shadow follows the square widget
-  // box (round-rect), which clashes with the sprite silhouette.
+  // No glow on the pixel-art sprites: the shadow follows the rectangular
+  // widget box (round-rect), which clashes with the sprite silhouette.
   lv_obj_set_style_shadow_opa(blobShape, LV_OPA_TRANSP, 0);
 
-  // Eye layout: the eyes live on Smol's TV screen. gen_sprites.py pins the
-  // screen center at (sz/2, sz*2/5), i.e. -sz/10 from widget center — these
-  // offsets/sizes keep every expression (surprise 1.5x + drift) inside the
-  // screen at all three scales; the tightest fit is the blob stage.
-  eyeOffX  = sz / 20;
-  eyeOffY  = -(sz / 10);
-  eyeBaseW = sz / 16;
-  g_eyeGrid = (sz >= 245) ? 6 : (sz >= 205) ? 5 : 4;  // Smol art scale (egg lands on 4)
+  // Eye layout: the eyes live on Smol's TV screen, whose center the
+  // generator reports per stage (eyeCx == w/2 by construction; eyeCy is an
+  // offset from the canvas top). Sizes are pre-tuned so every expression
+  // (surprise 1.5x + drift) stays inside the screen at every scale.
+  eyeOffX  = L.eyeOffX;
+  eyeOffY  = L.eyeCy - L.h / 2;  // placeEye offsets are from widget center
+  eyeBaseW = L.eyeW;
+  g_eyeGrid = L.grid;
 
   applyMoodExpression();
   startBlobAnimations();
@@ -889,10 +907,10 @@ void PetUI::startBlobAnimations() {
   // (Glow pulse removed with the sprite conversion — see refreshPetScreen.)
 
   // Kick off roaming — first move is immediate, then on timer
-  // Period scales with mood: mood=100 → 1× base, mood=0 → 5× base
+  // Period scales with vitality: 100 → 1× base, 0 → 5× base
   roamToRandom();
-  int mood0 = pet->getMood();
-  uint32_t initPeriod = (uint32_t)(ROAM_PERIOD_MS[stage] * (25 + (100 - mood0)) / 25);
+  int v0 = vitality(pet);
+  uint32_t initPeriod = (uint32_t)(ROAM_PERIOD_MS[stage] * (25 + (100 - v0)) / 25);
   roamTimer = lv_timer_create(roamTimerCB, initPeriod, this);
 }
 
@@ -922,7 +940,7 @@ void PetUI::healthFollowCB(lv_timer_t* t) {
 
 void PetUI::roamToRandom() {
   int stage = pet->getStage();
-  int sz    = stageSize(stage);
+  const SpriteLayout& L = stageLayout(stage);
   lv_coord_t pW = lv_obj_get_width(petScreen);
   lv_coord_t pH = lv_obj_get_height(petScreen);
 
@@ -933,17 +951,17 @@ void PetUI::roamToRandom() {
   lv_anim_del(this,      (lv_anim_exec_xcb_t)animSetDepth);
   lv_img_set_zoom(blobShape, depthZoom);
   g_depthZoom = depthZoom;
-  lv_obj_set_size(blobShape, sz, sz);
+  lv_obj_set_size(blobShape, L.w, L.h);
   if (blobBaseX >= 0) lv_obj_set_pos(blobShape, blobBaseX, blobBaseY);
 
   // Keep blob + glow fully within screen.
   int glowExt = GLOW_BASE_W[stage] + GLOW_PULSE[stage] + GLOW_SPREAD[stage];
   int margin  = 10 + glowExt;
-  int rangeX  = pW - sz - margin * 2;
-  int rangeY  = pH - sz - margin * 2;
+  int rangeX  = pW - L.w - margin * 2;
+  int rangeY  = pH - L.h - margin * 2;
 
-  int targetX = rangeX > 0 ? margin + rand() % rangeX : (pW - sz) / 2;
-  int targetY = rangeY > 0 ? margin + rand() % rangeY : (pH - sz) / 2;
+  int targetX = rangeX > 0 ? margin + rand() % rangeX : (pW - L.w) / 2;
+  int targetY = rangeY > 0 ? margin + rand() % rangeY : (pH - L.h) / 2;
 
   int curX = blobBaseX;
   int curY = blobBaseY;
@@ -954,32 +972,44 @@ void PetUI::roamToRandom() {
   // 66%..129%). Coming in close = walking toward the viewer.
   int targetDepth = 170 + rand() % 160;
 
-  // A glide that clearly shrinks the depth is walking AWAY: show the back
-  // view and hide the eyes (no face back there). The threshold keeps small
-  // depth wobbles from flashing the back for a barely-receding glide.
-  // The egg has no back view — it keeps its face (and eyes) at any depth.
-  walkAway = stage != STAGE_EGG && targetDepth + 25 < depthZoom;
-  if (walkAway) {
-    lv_obj_add_flag(eyeLeft,  LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(eyeRight, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_clear_flag(eyeLeft,  LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(eyeRight, LV_OBJ_FLAG_HIDDEN);
-  }
-
-  // Eye drift: shift eyes toward the direction of movement — unless the
-  // pet is coming up close, in which case it looks straight at the viewer.
+  // Which way is this glide facing? A clearly-shrinking depth is walking
+  // AWAY (back view); otherwise a mostly-horizontal glide without a big
+  // depth change reads as passing by (side profile); anything else keeps
+  // the front view. The thresholds keep small wobbles from flip-flopping
+  // views. The egg has only a front — it keeps its face at any depth.
+  // Back and side hide the eyes: no screen is visible from there.
   int dx = targetX - curX;
   int dy = targetY - curY;
   int absDx = dx < 0 ? -dx : dx;
   int absDy = dy < 0 ? -dy : dy;
   int dist  = absDx + absDy;
+  int absDDepth = targetDepth < depthZoom ? depthZoom - targetDepth
+                                          : targetDepth - depthZoom;
+  if (stage == STAGE_EGG) {
+    walkView = WALK_FRONT;
+  } else if (targetDepth + 25 < depthZoom) {
+    walkView = WALK_BACK;
+  } else if (absDx > 2 * absDy && absDx > 40 && absDDepth < 60) {
+    walkView = WALK_SIDE;
+  } else {
+    walkView = WALK_FRONT;
+  }
+  if (walkView == WALK_FRONT) {
+    lv_obj_clear_flag(eyeLeft,  LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(eyeRight, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(eyeLeft,  LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(eyeRight, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  // Eye drift: shift eyes toward the direction of movement — unless the
+  // pet is coming up close, in which case it looks straight at the viewer.
   if (targetDepth >= 280) {
     eyeDriftX = eyeDriftY = 0;   // looking at you
   } else if (dist > 4) {
     // Drift scales with stage: ±7 px would walk the eyes off the blob
-    // stage's 28 px-wide TV screen.
-    int driftMax = LV_MAX(2, stageSize(stage) / 40);
+    // stage's TV screen.
+    int driftMax = stageLayout(stage).drift;
     eyeDriftX = (lv_coord_t)(dx * driftMax / dist);
     eyeDriftY = (lv_coord_t)(dy * driftMax / dist);
   } else {
@@ -992,7 +1022,7 @@ void PetUI::roamToRandom() {
   // the size dynamic now). animSetDepth also rescales the eyes each frame.
   // (NEVER resize an lv_img widget: v8 tiles the bitmap to fill a larger
   // box, drawing a second copy of the sprite.)
-  int travelMs = ROAM_TRAVEL_MS[stage];
+  int travelMs = ROAM_TRAVEL_MS[stage] * travelScalePct(pet) / 100;
   lv_anim_t a;
 
   lv_anim_init(&a);
@@ -1030,10 +1060,12 @@ void PetUI::roamToRandom() {
   if (dx != 0) walkMirrored = dx > 0;
   if (walkAnimTimer) { lv_timer_del(walkAnimTimer); walkAnimTimer = nullptr; }
   walkFrameB = false;
-  walkAnimTimer = lv_timer_create(walkFrameCB, 160, this);
+  // Step cadence tracks the glide speed so a trudging pet also steps slowly.
+  walkAnimTimer = lv_timer_create(walkFrameCB,
+                                  (uint32_t)(160 * travelScalePct(pet) / 100), this);
   // Turn around NOW, not at the first 160ms frame flip — an eyeless front
   // view (or a back view with eyes) must never be shown.
-  lv_img_set_src(blobShape, stageWalkSprite(stage, walkFrameB, walkMirrored, walkAway));
+  lv_img_set_src(blobShape, stageWalkSprite(stage, walkFrameB, walkMirrored, walkView));
 }
 
 void PetUI::animSetDepth(void* petui, int32_t v) {
@@ -1048,18 +1080,18 @@ void PetUI::walkFrameCB(lv_timer_t* t) {
   int stage = self->pet->getStage();
   self->walkFrameB = !self->walkFrameB;
   lv_img_set_src(self->blobShape,
-                 stageWalkSprite(stage, self->walkFrameB, self->walkMirrored, self->walkAway));
+                 stageWalkSprite(stage, self->walkFrameB, self->walkMirrored, self->walkView));
 }
 
 void PetUI::startIdleWobble() {
   int stage = pet->getStage();
-  int sz    = stageSize(stage);
+  const SpriteLayout& L = stageLayout(stage);
 
   // Landed: stop the walk cycle on the base frame. Arrival always faces
   // the viewer again, so the back view ends and the eyes come back.
   if (walkAnimTimer) { lv_timer_del(walkAnimTimer); walkAnimTimer = nullptr; }
   walkFrameB = false;
-  walkAway = false;
+  walkView = WALK_FRONT;
   lv_obj_clear_flag(eyeLeft,  LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(eyeRight, LV_OBJ_FLAG_HIDDEN);
   lv_img_set_src(blobShape, stageSprite(stage));
@@ -1069,7 +1101,7 @@ void PetUI::startIdleWobble() {
   lv_anim_del(this,      (lv_anim_exec_xcb_t)animSetDepth);
   lv_img_set_zoom(blobShape, depthZoom);
   g_depthZoom = depthZoom;
-  lv_obj_set_size(blobShape, sz, sz);
+  lv_obj_set_size(blobShape, L.w, L.h);
   lv_obj_set_pos(blobShape, blobBaseX, blobBaseY);
 
   // Center eyes (drift reset)
@@ -1109,10 +1141,10 @@ void PetUI::startIdleWobble() {
 
 void PetUI::roamTimerCB(lv_timer_t* t) {
   PetUI* self = (PetUI*)t->user_data;
-  // Recompute period so mood changes take effect each interval
+  // Recompute period so hunger/health/mood changes take effect each interval
   int stage = self->pet->getStage();
-  int mood  = self->pet->getMood();
-  uint32_t period = (uint32_t)(ROAM_PERIOD_MS[stage] * (25 + (100 - mood)) / 25);
+  int v     = vitality(self->pet);
+  uint32_t period = (uint32_t)(ROAM_PERIOD_MS[stage] * (25 + (100 - v)) / 25);
   lv_timer_set_period(t, period);
   self->roamToRandom();
 }

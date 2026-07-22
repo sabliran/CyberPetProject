@@ -17,7 +17,14 @@ evolution = Smol grows. Frames:
           up), with their static-filled screens painted black to match.
   back1/back2 — back.aseprite frames 1 and 3, shown when a roam glide
           shrinks the depth zoom (walking away from the viewer); the
-          firmware hides the eyes while these are up.
+          firmware hides the eyes while these are up. No mirrored variants:
+          the back silhouette is near-symmetric and the flash budget goes
+          to the side view instead.
+  side1/side2 — walk.aseprite frames 1 and 3 (profile gait), shown for
+          mostly-horizontal glides. The art faces RIGHT natively, so the
+          r variants are the originals and the plain ones are mirrored —
+          matching the walk/back convention that r = moving right. Eyes
+          hidden here too (the screen isn't visible in profile).
 
 Frames are aligned to each other by the TV rim so the screen (and the
 eyes on it) stays put while the feet/cape bob during the walk cycle.
@@ -104,12 +111,13 @@ def head_bottom(im, from_y):
 
 def smol_frames():
     """Returns ({name: frame}, screen_center) in 32x40 sprite coords.
-    Frames: base, walk1/walk2 (front, leftward glides), back1/back2
-    (walking away), and r variants of each walk/back pose (body-mirrored,
-    for rightward glides)."""
+    Frames: base, walk1/walk2 (front), back1/back2 (walking away),
+    side1/side2 (profile), with body-mirrored r variants of walk and side
+    (r = moving right; back has no r — near-symmetric from behind)."""
     idle = load_ase_frames(os.path.join(ART, 'smol.aseprite'))
     walk = load_ase_frames(os.path.join(ART, 'walkDown.aseprite'))
     back = load_ase_frames(os.path.join(ART, 'back.aseprite'))
+    side = load_ase_frames(os.path.join(ART, 'walk.aseprite'))
     base, white = idle[4], idle[5]  # black-screen blink frame / white-screen flash
 
     # Screen interior from the white-screen frame — the one frame where the
@@ -141,8 +149,11 @@ def smol_frames():
         aligned.paste(f, (round(ax - fx), ay - fy), f)
         return aligned
 
-    def poses(frame_a, frame_b, head_src):
-        """(a, b, a_mirrored, b_mirrored) with the same head on all four."""
+    def poses(frame_a, frame_b, head_src, black_only_erase=False):
+        """(a, b, a_mirrored, b_mirrored) with the same head on all four.
+        black_only_erase: clear just the near-black (head) pixels in the
+        head rows instead of whole rows — the side view's cape rises up
+        beside the head and must survive the head swap."""
         head_hb = head_bottom(head_src, ay)
         head = head_src.crop((0, 0, head_src.width, head_hb + 1))
         out = []
@@ -152,10 +163,15 @@ def smol_frames():
             bp = body.load()
             for y in range(0, erase_to + 1):     # drop the frame's own head
                 for x in range(body.width):
+                    if black_only_erase and not (
+                            bp[x, y][3] > 128 and max(bp[x, y][:3]) < 50):
+                        continue
                     bp[x, y] = (0, 0, 0, 0)
             # Mirror about the screen's vertical axis so the flipped body
-            # stays centered under the (unchanged) head.
-            mdx = round(2 * screen_center[0] - (body.width - 1))
+            # stays centered under the (unchanged) head. Continuous
+            # reflection about x=scx maps column x to (2*scx - 1 - x);
+            # FLIP_LEFT_RIGHT gives (W - 1 - x), so shift by 2*scx - W.
+            mdx = round(2 * screen_center[0] - body.width)
             flipped = body.transpose(Image.FLIP_LEFT_RIGHT)
             mirrored = Image.new('RGBA', body.size, (0, 0, 0, 0))
             mirrored.paste(flipped, (mdx, 0), flipped)
@@ -165,22 +181,23 @@ def smol_frames():
         return out[0], out[2], out[1], out[3]
 
     w1, w2, w1r, w2r = poses(walk[1], walk[3], base)          # right arm down / up
-    b1, b2, b1r, b2r = poses(back[1], back[3], align(back[1]))  # most distinct back poses
+    b1, b2, _, _ = poses(back[1], back[3], align(back[1]))    # most distinct back poses
+    # Side art faces right natively: the mirrored outputs are the LEFTWARD
+    # frames and the originals become the r (rightward) variants.
+    s1r, s2r, s1, s2 = poses(side[1], side[3], align(side[1]),
+                             black_only_erase=True)  # opposite strides
     return {'base': base, 'walk1': w1, 'walk2': w2, 'walk1r': w1r, 'walk2r': w2r,
-            'back1': b1, 'back2': b2, 'back1r': b1r, 'back2r': b2r}, screen_center
+            'back1': b1, 'back2': b2,
+            'side1': s1, 'side2': s2, 'side1r': s1r, 'side2r': s2r}, screen_center
 
-def compose(frame, k, sz, screen_center):
-    """Nearest-neighbor scale by k into an sz x sz canvas, positioned so the
-    TV-screen center lands at (sz/2, sz*2/5) — the firmware's eye anchor."""
-    scx, scy = screen_center
-    im = frame.resize((frame.width * k, frame.height * k), Image.NEAREST)
-    ox = round(sz / 2 - k * scx)
-    oy = round(sz * 2 / 5 - k * scy)
-    assert ox >= 0 and oy >= 0 and ox + im.width <= sz and oy + im.height <= sz, \
-        f'smol frame does not fit: k={k} sz={sz} at ({ox},{oy})'
-    canvas = Image.new('RGBA', (sz, sz), (0, 0, 0, 0))
-    canvas.paste(im, (ox, oy), im)
-    return canvas
+def compose(frame, k, crop):
+    """Crop to the shared union bbox and nearest-neighbor scale by k — no
+    transparent padding: sprite bytes cost flash whether painted or not,
+    so the canvas is exactly the art. The firmware reads each stage's
+    canvas size and eye anchor from the generated sprite_layout.h."""
+    cx0, cy0, cx1, cy1 = crop
+    im = frame.crop((cx0, cy0, cx1 + 1, cy1 + 1))
+    return im.resize((im.width * k, im.height * k), Image.NEAREST)
 
 # ---- procedural egg (unchanged original) ----------------------------------
 
@@ -202,16 +219,16 @@ def outline_and_shade(g, shade_from=0.7):
                 elif (y - y0) / (y1 - y0 + 1e-9) > shade_from: o[y][x] = SH
     return o
 
-def render(g, px, canvas):
+def render(g, px):
+    """Paint the palette grid and scale by px, trimmed to the art bbox —
+    like the Smol frames, no transparent padding."""
     h, w = len(g), len(g[0])
     im = Image.new('RGBA', (w, h), (0, 0, 0, 0))
     for y in range(h):
         for x in range(w):
             if g[y][x]: im.putpixel((x, y), PAL[g[y][x]])
-    im = im.resize((w * px, h * px), Image.NEAREST)
-    sq = Image.new('RGBA', (canvas, canvas), (0, 0, 0, 0))
-    sq.alpha_composite(im, ((canvas - im.size[0]) // 2, (canvas - im.size[1]) // 2))
-    return sq
+    im = im.crop(im.getbbox())
+    return im.resize((im.width * px, im.height * px), Image.NEAREST)
 
 def put(g, pts, v=OUT):
     for x, y in pts:
@@ -226,20 +243,62 @@ def egg_frame():
             if abs(x - 7.5) <= half: egg[y][x] = OUT
     egg = outline_and_shade(egg, 0.75)
     put(egg, [(5, 6), (6, 7), (7, 6), (8, 7), (9, 6), (10, 7), (6, 8), (8, 8)], LN)
-    return render(egg, 4, 80)
+    return render(egg, 4)
 
 # ---- assembly -------------------------------------------------------------
 
+STAGES = (('blob', 4), ('creature', 5), ('evolved', 6))  # name, art scale
+
+def union_crop(frames, scx):
+    """Union bbox of all frames, symmetrized about the screen's vertical
+    axis (x = scx) so mirrored frames share the crop and the screen center
+    lands exactly at canvas W/2."""
+    bx0 = min(f.getbbox()[0] for f in frames.values())
+    by0 = min(f.getbbox()[1] for f in frames.values())
+    bx1 = max(f.getbbox()[2] for f in frames.values()) - 1  # PIL bbox: exclusive
+    by1 = max(f.getbbox()[3] for f in frames.values()) - 1
+    ax = int(2 * scx) - 1  # continuous reflection: column x -> ax - x
+    return min(bx0, ax - bx1), by0, max(bx1, ax - bx0), by1
+
 def make_sprites():
-    """Returns [(name, image)] matching the externs in sprites.h."""
-    frames, sc = smol_frames()
-    out = [('egg', egg_frame())]
-    for name, k, sz in (('blob', 4, 165), ('creature', 5, 205), ('evolved', 6, 245)):
-        out.append((name, compose(frames['base'], k, sz, sc)))
-        for pose in ('walk1', 'walk2', 'walk1r', 'walk2r',
-                     'back1', 'back2', 'back1r', 'back2r'):
-            out.append((f'{name}_{pose}', compose(frames[pose], k, sz, sc)))
-    return out
+    """Returns ([(name, image)], layouts) matching sprites.h / sprite_layout.h."""
+    frames, (scx, scy) = smol_frames()
+    crop = union_crop(frames, scx)
+    egg = egg_frame()
+    # Layout rows: w, h, eyeCx, eyeCy, grid, eyeW, eyeOffX, drift — indexed
+    # by STAGE_*. Egg values reproduce the pre-trim eye behavior.
+    layouts = [('egg', (egg.width, egg.height, egg.width // 2,
+                        egg.height // 2 - egg.height // 10, 4, 5, 4, 2))]
+    out = [('egg', egg)]
+    for name, k in STAGES:
+        base = compose(frames['base'], k, crop)
+        eye_cx = round(k * (scx - crop[0]))
+        assert eye_cx * 2 == base.width, 'screen axis must be the canvas center'
+        layouts.append((name, (base.width, base.height, eye_cx,
+                               round(k * (scy - crop[1])), k,
+                               (5 * k) // 2, 2 * k, k)))
+        out.append((name, base))
+        for pose in ('walk1', 'walk2', 'walk1r', 'walk2r', 'back1', 'back2',
+                     'side1', 'side2', 'side1r', 'side2r'):
+            out.append((f'{name}_{pose}', compose(frames[pose], k, crop)))
+    return out, layouts
+
+def to_layout_h(layouts, hpath):
+    rows = ',\n'.join(f'  {{ {", ".join(str(v) for v in vals)} }},  // {name}'
+                      for name, vals in layouts)
+    open(hpath, 'w').write(f'''\
+// Auto-generated by tools/gen_sprites.py — do not hand-edit.
+// Per-stage sprite geometry, indexed by STAGE_* (egg, blob, creature,
+// evolved). Canvases are trimmed to the art (no transparent padding), so
+// the widget size and the eye anchor (TV-screen center, px from the
+// canvas top-left) come from here. grid = art pixel scale (eye snap),
+// eyeW/eyeOffX/drift = eye sizing tuned to the screen at that scale.
+#pragma once
+typedef struct {{ int w, h, eyeCx, eyeCy, grid, eyeW, eyeOffX, drift; }} SpriteLayout;
+static const SpriteLayout SPRITE_LAYOUT[4] = {{
+{rows}
+}};
+''')
 
 def to_c(sprites, cpath):
     out = ['// Auto-generated by tools/gen_sprites.py — do not hand-edit.',
@@ -267,6 +326,9 @@ def to_c(sprites, cpath):
 
 if __name__ == '__main__':
     root = os.path.join(os.path.dirname(__file__), '..')
-    sprites = make_sprites()
+    sprites, layouts = make_sprites()
     to_c(sprites, os.path.join(root, 'CyberPet', 'sprites.c'))
-    print('wrote CyberPet/sprites.c (sprites.h is hand-maintained)')
+    to_layout_h(layouts, os.path.join(root, 'CyberPet', 'sprite_layout.h'))
+    for name, (w, h, *_rest) in layouts:
+        print(f'  {name}: {w}x{h}')
+    print('wrote CyberPet/sprites.c + sprite_layout.h (sprites.h is hand-maintained)')

@@ -11,11 +11,11 @@
 extern "C" {
 #endif
 extern const lv_img_dsc_t sprite_egg;             // 80x80 (no walk frames — unhatched)
-// Walk frames come per direction: the art's body sway trails the movement,
-// so plain walk1/walk2 are for LEFTWARD glides and the r (body-mirrored)
-// variants for rightward. back1/back2 (+r) show the pet from behind while
-// a glide walks it away from the viewer (depth zoom shrinking) — the
-// firmware hides the eyes then. The head is identical within each view.
+// Walk frames come per view and direction: r = moving right (body-mirrored
+// where the art is directional). walk = front view, back = walking away
+// (depth zoom shrinking; no r — near-symmetric from behind), side = profile
+// for mostly-horizontal glides. The firmware hides the eyes for back and
+// side (no screen visible). The head is identical within each view.
 #define SPRITE_WALK_SET(stage)             \
   extern const lv_img_dsc_t stage##_walk1; \
   extern const lv_img_dsc_t stage##_walk2; \
@@ -23,8 +23,10 @@ extern const lv_img_dsc_t sprite_egg;             // 80x80 (no walk frames — u
   extern const lv_img_dsc_t stage##_walk2r;\
   extern const lv_img_dsc_t stage##_back1; \
   extern const lv_img_dsc_t stage##_back2; \
-  extern const lv_img_dsc_t stage##_back1r;\
-  extern const lv_img_dsc_t stage##_back2r;
+  extern const lv_img_dsc_t stage##_side1; \
+  extern const lv_img_dsc_t stage##_side2; \
+  extern const lv_img_dsc_t stage##_side1r;\
+  extern const lv_img_dsc_t stage##_side2r;
 extern const lv_img_dsc_t sprite_blob;            // 165x165, idle pose
 SPRITE_WALK_SET(sprite_blob)
 extern const lv_img_dsc_t sprite_creature;        // 205x205
