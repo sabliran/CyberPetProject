@@ -76,6 +76,14 @@ public:
   const TrophyInfo* getTrophies() const { return trophies; }
   int getTrophyCount() const { return trophyCount; }
 
+  // Reminders from the last sync response (dashboard-owned, quests
+  // pattern). hasReminders() distinguishes "server sent a list" from "old
+  // server without the key" so the sketch never wipes its NVS cache on a
+  // response that predates the feature.
+  bool hasReminders() const { return remindersSynced; }
+  const ReminderInfo* getReminders() const { return reminders; }
+  int getReminderCount() const { return reminderCount; }
+
   // One-shot commands ride the sync response as monotonic tokens: the server
   // increments petResetToken when the user presses "Reset XP" on the
   // dashboard; loop() compares against the NVS-persisted last-applied token
@@ -110,6 +118,16 @@ public:
     plankTotalSec_ = totalSec; plankSessions_ = sessions; plankBestMs_ = bestMs;
   }
 
+  // Device storage report for the dashboard's Storage panel — real numbers
+  // instead of server-side estimates. Sketch/app-partition sizes are static
+  // per build; NVS usage drifts as records accrue. appTotal 0 = not yet
+  // gathered (omitted from the request).
+  void setStorageInfo(uint32_t sketchBytes, uint32_t appTotalBytes,
+                      uint32_t nvsUsedBytes, uint32_t nvsTotalBytes) {
+    sketchBytes_ = sketchBytes; appTotalBytes_ = appTotalBytes;
+    nvsUsedBytes_ = nvsUsedBytes; nvsTotalBytes_ = nvsTotalBytes;
+  }
+
   // Detector-tuning aid: POST a raw |a| capture (uint16 little-endian
   // milli-g) to the dashboard, which stores it for offline analysis.
   // WiFi-only — the USB bridge doesn't carry this. Returns true on 2xx.
@@ -129,8 +147,15 @@ private:
   uint32_t  plankTotalSec_ = 0;
   uint32_t  plankSessions_ = 0;
   uint32_t  plankBestMs_ = 0;
+  uint32_t  sketchBytes_ = 0;
+  uint32_t  appTotalBytes_ = 0;
+  uint32_t  nvsUsedBytes_ = 0;
+  uint32_t  nvsTotalBytes_ = 0;
   QuestInfo quests[MAX_QUESTS];
   int       questCount = 0;
+  ReminderInfo reminders[MAX_REMINDERS];
+  int       reminderCount = 0;
+  bool      remindersSynced = false;
   GoalInfo  goals[MAX_GOALS];
   int       goalCount = 0;
   TrophyInfo trophies[MAX_TROPHIES];

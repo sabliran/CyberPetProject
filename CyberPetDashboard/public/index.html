@@ -222,6 +222,21 @@
         </div>
       </section>
 
+      <!-- Reminders -->
+      <section class="panel panel--reminders">
+        <h2 class="panel__title">Reminders</h2>
+        <p class="settingshint">Koko holds up a speech bubble on the watch at these times, until
+          it's tapped away (once per day each). "For" is how long the reminder stays available
+          before it quietly gives up (e.g. 10 h = it nags until bedtime) — it may cross
+          midnight. Up to 6.</p>
+        <div id="reminderRows"></div>
+        <div class="reminder-actions">
+          <button type="button" class="ghost-btn" id="reminderAdd">+ add reminder</button>
+          <button type="button" id="reminderSave">Save reminders</button>
+          <span class="savedFlag" id="remindersSaved">Saved</span>
+        </div>
+      </section>
+
       <!-- Storage -->
       <section class="panel panel--storage">
         <div class="panel__titlerow">
@@ -238,9 +253,18 @@
               <div class="storage-fill storage-fill--dashboard" id="storeDashFill"></div>
             </div>
           </div>
+          <div class="storage-row" id="storeFlashRow" style="display:none">
+            <div class="storage-label">
+              <span class="storage-name">Device flash (firmware)</span>
+              <span class="storage-val" id="storeFlashVal">—</span>
+            </div>
+            <div class="storage-track">
+              <div class="storage-fill storage-fill--flash" id="storeFlashFill"></div>
+            </div>
+          </div>
           <div class="storage-row">
             <div class="storage-label">
-              <span class="storage-name">Device NVS (est.)</span>
+              <span class="storage-name" id="storeNvsName">Device NVS</span>
               <span class="storage-val" id="storeNvsVal">—</span>
             </div>
             <div class="storage-track">

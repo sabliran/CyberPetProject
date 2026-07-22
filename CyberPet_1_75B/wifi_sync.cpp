@@ -153,6 +153,15 @@ void WifiSync::buildSyncRequest(Pet* pet, HabitTracker* tracker, String& out) {
   plankObj["sessions"] = plankSessions_;
   plankObj["bestMs"]   = plankBestMs_;
 
+  // Real device storage numbers for the dashboard's Storage panel.
+  if (appTotalBytes_ > 0) {
+    JsonObject stObj = reqDoc["storage"].to<JsonObject>();
+    stObj["sketch"]   = sketchBytes_;
+    stObj["appTotal"] = appTotalBytes_;
+    stObj["nvsUsed"]  = nvsUsedBytes_;
+    stObj["nvsTotal"] = nvsTotalBytes_;
+  }
+
   // Sleep rating rides along once logged; keyed server-side by its own date.
   if (sleepQuality_ >= 0) {
     JsonObject sleepObj = reqDoc["sleep"].to<JsonObject>();
@@ -372,6 +381,27 @@ bool WifiSync::applySyncResponse(const String& response, Pet* pet, HabitTracker*
     quests[questCount].name[QUEST_NAME_LEN - 1] = '\0';
     quests[questCount].xp = q["xpValue"] | 0;  // API shape is camelCase (server.js), not the SQL column name
     questCount++;
+  }
+
+  // Reminders: dashboard-owned speech-bubble nags. Only overwrite when the
+  // key is present — an old server's response must not wipe the NVS cache.
+  if (respDoc["reminders"].is<JsonArray>()) {
+    remindersSynced = true;
+    reminderCount = 0;
+    for (JsonObject r : respDoc["reminders"].as<JsonArray>()) {
+      if (reminderCount >= MAX_REMINDERS) break;
+      const char* msg = r["message"] | "";
+      if (msg[0] == '\0') continue;
+      ReminderInfo& out = reminders[reminderCount];
+      int h = r["hour"] | 0, m = r["minute"] | 0, dur = r["durationMin"] | 120;
+      out.enabled     = (uint8_t)((r["enabled"] | true) ? 1 : 0);
+      out.hour        = (uint8_t)((h < 0) ? 0 : (h > 23) ? 23 : h);
+      out.minute      = (uint8_t)((m < 0) ? 0 : (m > 59) ? 59 : m);
+      out.durationMin = (uint16_t)((dur < 1) ? 1 : (dur > 1439) ? 1439 : dur);
+      strncpy(out.message, msg, REMINDER_MSG_LEN - 1);
+      out.message[REMINDER_MSG_LEN - 1] = '\0';
+      reminderCount++;
+    }
   }
 
   // Goals: dashboard-owned, read-only on device. Copy for the goal screen.

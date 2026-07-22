@@ -66,6 +66,40 @@ int Storage::loadLastResetDay() {
   return prefs.getInt("last_reset_day", -1);
 }
 
+void Storage::saveReminders(const ReminderInfo* list, int count) {
+  if (count < 0) count = 0;
+  if (count > MAX_REMINDERS) count = MAX_REMINDERS;
+  // Change-guard: sync runs every 10 s over USB; don't rewrite identical bytes.
+  ReminderInfo cur[MAX_REMINDERS];
+  if (loadReminders(cur) == count &&
+      memcmp(cur, list, sizeof(ReminderInfo) * count) == 0) return;
+  if (count > 0) prefs.putBytes("reminders", list, sizeof(ReminderInfo) * count);
+  else           prefs.remove("reminders");
+  prefs.putInt("remind_count", count);
+}
+
+int Storage::loadReminders(ReminderInfo* list) {
+  int count = prefs.getInt("remind_count", 0);
+  if (count <= 0 || count > MAX_REMINDERS) return 0;
+  size_t len = prefs.getBytesLength("reminders");
+  if (len != sizeof(ReminderInfo) * (size_t)count) return 0;  // struct changed / stale
+  prefs.getBytes("reminders", list, len);
+  return count;
+}
+
+void Storage::saveReminderDays(const int16_t days[MAX_REMINDERS]) {
+  int16_t cur[MAX_REMINDERS];
+  loadReminderDays(cur);
+  if (memcmp(cur, days, sizeof cur) == 0) return;
+  prefs.putBytes("remind_days", days, sizeof(int16_t) * MAX_REMINDERS);
+}
+
+void Storage::loadReminderDays(int16_t days[MAX_REMINDERS]) {
+  for (int i = 0; i < MAX_REMINDERS; i++) days[i] = -1;
+  size_t len = prefs.getBytesLength("remind_days");
+  if (len == sizeof(int16_t) * MAX_REMINDERS) prefs.getBytes("remind_days", days, len);
+}
+
 void Storage::saveLastResetYear(int year) {
   prefs.putInt("last_reset_yr", year);
 }

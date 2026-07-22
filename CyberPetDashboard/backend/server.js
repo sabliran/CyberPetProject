@@ -410,6 +410,54 @@ app.post('/api/settings', (req, res) => {
   res.json(data.settings);
 });
 
+// ---------- Reminders ------------------------------------------------------
+// Daily speech bubbles Koko holds up on the watch. Dashboard-owned: the
+// device receives the list in every sync response (quests pattern) and
+// caches it in NVS. Max 6; each has a start time, a window length in
+// minutes (how long the bubble stays available before giving up — may
+// cross midnight), a message (device truncates at 39 chars), and an
+// enable flag.
+
+const DEFAULT_REMINDERS = [
+  { enabled: true, hour: 14, minute: 0,  durationMin: 600, message: 'brush your teeth!' },
+  { enabled: true, hour: 0,  minute: 30, durationMin: 210, message: 'brush your teeth!' },
+  { enabled: true, hour: 9,  minute: 0,  durationMin: 180, message: 'time to study!' },
+  { enabled: true, hour: 15, minute: 30, durationMin: 150, message: 'read something!' },
+];
+
+function cleanReminders(list) {
+  if (!Array.isArray(list)) return null;
+  const clampNum = (v, lo, hi, dflt) => {
+    v = Number(v);
+    return Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : dflt;
+  };
+  const out = [];
+  for (const r of list.slice(0, 6)) {
+    const message = String(r.message || '').trim().slice(0, 39);
+    if (!message) continue;
+    out.push({
+      enabled:     !!r.enabled,
+      hour:        clampNum(r.hour, 0, 23, 0),
+      minute:      clampNum(r.minute, 0, 59, 0),
+      durationMin: clampNum(r.durationMin, 1, 1439, 120),
+      message,
+    });
+  }
+  return out;
+}
+
+app.get('/api/reminders', (req, res) => {
+  res.json(store.get().reminders || DEFAULT_REMINDERS);
+});
+
+app.put('/api/reminders', (req, res) => {
+  const clean = cleanReminders(req.body);
+  if (!clean) return res.status(400).json({ error: 'expected an array of reminders' });
+  const data = store.update(d => { d.reminders = clean; bumpConfig(d); });
+  broadcastConfigChange(data.configVersion, data.configUpdatedAt);
+  res.json(data.reminders);
+});
+
 // ---------- Pet state ------------------------------------------------------
 
 app.get('/api/pet', (req, res) => {
@@ -439,7 +487,7 @@ const WALK_STRIDE_CM  = 70;
 const STEP_HISTORY_DAYS = 90;
 
 app.post('/api/sync', (req, res) => {
-  const { deviceId, petState, completedHabits, steps, sleep, backSessions, pushSessions, pullupSessions, focusSessions, plank } = req.body;
+  const { deviceId, petState, completedHabits, steps, sleep, backSessions, pushSessions, pullupSessions, focusSessions, plank, storage: devStorage } = req.body;
   // Use the server's local date as the canonical completion date.
   // Device and server clocks may disagree slightly around midnight — the server
   // date is always preferred so history records are consistent.
@@ -573,6 +621,17 @@ app.post('/api/sync', (req, res) => {
     if (plank && typeof plank.bestMs === 'number' && plank.bestMs > (d.plankBestMs || 0)) {
       d.plankBestMs = plank.bestMs;
     }
+    // Real device storage numbers (sketch/app partition + NVS) — replaces
+    // the /api/storage estimates once the device has reported.
+    if (devStorage && typeof devStorage.appTotal === 'number' && devStorage.appTotal > 0) {
+      d.deviceStorage = {
+        sketch:     devStorage.sketch   | 0,
+        appTotal:   devStorage.appTotal | 0,
+        nvsUsed:    devStorage.nvsUsed  | 0,
+        nvsTotal:   devStorage.nvsTotal | 0,
+        reportedAt: new Date().toISOString(),
+      };
+    }
   });
   res.json({
     habits:        data.habits.filter(h => h.active),
@@ -583,6 +642,8 @@ app.post('/api/sync', (req, res) => {
     dashXpTotal:   data.dashXpTotal   || 0,
     petResetToken: data.petResetToken || 0,
     configVersion: data.configVersion || 1,
+    // Daily speech-bubble reminders (dashboard-owned; device caches in NVS).
+    reminders:     data.reminders || DEFAULT_REMINDERS,
     // Earned trophy names for the device's trophy screen (read-only there).
     trophies:      computeTrophies(data).filter(t => t.earned).map(t => t.name)
   });
@@ -964,9 +1025,16 @@ app.get('/api/storage', (req, res) => {
   const questCount  = data.quests.filter(q => q.active).length;
   const todoCount   = data.todos.length;
 
+  // Prefer the device's own report (rides every sync) over the estimates.
+  const dev = data.deviceStorage || null;
   res.json({
     dashboard: { used: storeSize, quota: DASHBOARD_QUOTA },
-    nvs:       { used: nvsEstimate, total: NVS_SIZE },
+    nvs:       (dev && dev.nvsTotal > 0)
+                 ? { used: dev.nvsUsed, total: dev.nvsTotal, real: true }
+                 : { used: nvsEstimate, total: NVS_SIZE },
+    flash:     (dev && dev.appTotal > 0)
+                 ? { used: dev.sketch, total: dev.appTotal }
+                 : null,
     counts:    { habits: habitCount, quests: questCount, todos: todoCount, logEntries }
   });
 });

@@ -72,6 +72,13 @@ public:
   void saveLastResetDay(int dayOfYear);
   int  loadLastResetDay();
 
+  // Reminders: dashboard-owned list cached for offline boots (quests
+  // pattern) + per-slot dismissal stamps (window-start day-of-year).
+  void saveReminders(const ReminderInfo* list, int count);
+  int  loadReminders(ReminderInfo* list);  // fills MAX_REMINDERS-sized array
+  void saveReminderDays(const int16_t days[MAX_REMINDERS]);
+  void loadReminderDays(int16_t days[MAX_REMINDERS]);  // -1 = not dismissed
+
   void saveLastResetYear(int year);
   int  loadLastResetYear();
 

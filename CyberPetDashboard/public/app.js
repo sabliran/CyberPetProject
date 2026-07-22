@@ -44,6 +44,7 @@ document.querySelectorAll('.tabnav__btn').forEach(btn => {
     document.getElementById(`tab-${btn.dataset.tab}`).classList.remove('tabpanel--hidden');
     if (btn.dataset.tab === 'options') {
       loadSettings();
+      loadReminders();
       loadStorage();
       loadBackupInfo();
       loadConfigVersion();
@@ -375,6 +376,75 @@ document.getElementById('settingsForm').addEventListener('submit', async (e) => 
   flashPushed();
 });
 
+// ---- Reminders ------------------------------------------------------------
+// Editable rows; nothing persists until "Save reminders" PUTs the whole
+// list (the device picks it up on its next config sync).
+
+// Scrollable 24h time selects (the native time input renders AM/PM on a
+// 12h-locale OS, and number spinners felt clunky — dropdowns are both).
+function hourOptions(sel) {
+  return Array.from({ length: 24 }, (_, h) =>
+    `<option value="${h}" ${h === sel ? 'selected' : ''}>${String(h).padStart(2, '0')}</option>`).join('');
+}
+function minuteOptions(sel) {
+  return Array.from({ length: 60 }, (_, m) =>
+    `<option value="${m}" ${m === sel ? 'selected' : ''}>${String(m).padStart(2, '0')}</option>`).join('');
+}
+
+function reminderRow(r = { enabled: true, hour: 12, minute: 0, durationMin: 120, message: '' }) {
+  const row = document.createElement('div');
+  row.className = 'reminder-row';
+  const dur  = r.durationMin ?? 120;
+  const durH = Math.floor(dur / 60);
+  const durM = dur % 60;
+  row.innerHTML = `
+    <input type="text" class="rem-msg" maxlength="39" placeholder="message on the bubble" value="${escapeHtml(r.message ?? '')}">
+    <label class="reminder-at">at
+      <select class="rem-h">${hourOptions(r.hour ?? 0)}</select>:<select class="rem-m">${minuteOptions(r.minute ?? 0)}</select>
+    </label>
+    <label class="reminder-dur">for
+      <input type="number" class="rem-dur-h" min="0" max="23" value="${durH}"> h
+      <input type="number" class="rem-dur-m" min="0" max="59" value="${durM}"> min
+    </label>
+    <label class="reminder-on" title="enabled"><input type="checkbox" class="rem-on" ${r.enabled ? 'checked' : ''}> on</label>
+    <button type="button" class="ghost-btn rem-del" title="remove">✕</button>`;
+  row.querySelector('.rem-del').addEventListener('click', () => row.remove());
+  return row;
+}
+
+async function loadReminders() {
+  const list = await api('/reminders');
+  const box = document.getElementById('reminderRows');
+  box.innerHTML = '';
+  for (const r of list) box.appendChild(reminderRow(r));
+}
+
+document.getElementById('reminderAdd').addEventListener('click', () => {
+  const box = document.getElementById('reminderRows');
+  if (box.children.length >= 6) return;
+  box.appendChild(reminderRow());
+});
+
+document.getElementById('reminderSave').addEventListener('click', async () => {
+  const rows = [...document.querySelectorAll('#reminderRows .reminder-row')];
+  const list = rows.slice(0, 6).map(row => {
+    const durH = parseInt(row.querySelector('.rem-dur-h').value, 10) || 0;
+    const durM = parseInt(row.querySelector('.rem-dur-m').value, 10) || 0;
+    return {
+      enabled:     row.querySelector('.rem-on').checked,
+      hour:        parseInt(row.querySelector('.rem-h').value, 10) || 0,
+      minute:      parseInt(row.querySelector('.rem-m').value, 10) || 0,
+      durationMin: Math.max(1, durH * 60 + durM),
+      message:     row.querySelector('.rem-msg').value.trim(),
+    };
+  }).filter(r => r.message);
+  await api('/reminders', { method: 'PUT', body: JSON.stringify(list) });
+  await loadReminders();  // reflect server-side clamping
+  const flag = document.getElementById('remindersSaved');
+  flag.classList.add('show');
+  setTimeout(() => flag.classList.remove('show'), 1600);
+});
+
 // ---- Dev: Todos -----------------------------------------------------------
 
 function todoRow(todo) {
@@ -494,7 +564,25 @@ async function loadStorage() {
   document.getElementById('storeDashVal').textContent =
     `${fmtBytes(s.dashboard.used)} / ${fmtBytes(s.dashboard.quota)}`;
   document.getElementById('storeNvsVal').textContent =
-    `${fmtBytes(s.nvs.used)} / ${fmtBytes(s.nvs.total)} est.`;
+    `${fmtBytes(s.nvs.used)} / ${fmtBytes(s.nvs.total)}${s.nvs.real ? '' : ' est.'}`;
+  document.getElementById('storeNvsName').textContent =
+    s.nvs.real ? 'Device NVS' : 'Device NVS (est.)';
+
+  // Firmware app-partition row: only once the device has reported real
+  // numbers (rides every sync since the storage-report firmware).
+  const flashRow = document.getElementById('storeFlashRow');
+  if (s.flash) {
+    flashRow.style.display = '';
+    const flashPct = Math.min(100, s.flash.used / s.flash.total * 100);
+    document.getElementById('storeFlashVal').textContent =
+      `${fmtBytes(s.flash.used)} / ${fmtBytes(s.flash.total)} (${flashPct.toFixed(0)}%)`;
+    const flashFill = document.getElementById('storeFlashFill');
+    flashFill.style.width = `${flashPct}%`;
+    flashFill.className = 'storage-fill storage-fill--flash' +
+      (flashPct > 90 ? ' storage-fill--crit' : flashPct > 70 ? ' storage-fill--warn' : '');
+  } else {
+    flashRow.style.display = 'none';
+  }
 
   const dashFill = document.getElementById('storeDashFill');
   dashFill.style.width = `${dashPct}%`;

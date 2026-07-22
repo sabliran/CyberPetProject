@@ -24,6 +24,8 @@
 #include "XPowersLib.h"
 #include <esp_timer.h>
 #include <esp_sleep.h>
+#include <esp_ota_ops.h>  // running app partition size for the storage report
+#include <nvs.h>          // real NVS usage stats for the storage report
 #include <driver/rtc_io.h>   // RTC-domain pull config for the tap-to-wake pin
 #include <ArduinoOTA.h>
 #include "ESP_I2S.h"
@@ -474,6 +476,48 @@ static void plankDoneCB(uint32_t heldMs) {
   plankState.sessions++;
   storage.savePlankState(plankState);
   wifiSync.setPlankInfo(plankState.totalSec, plankState.sessions, plankState.bestMs);
+}
+
+// Real storage numbers for the dashboard's Storage panel (its NVS figure
+// was a server-side estimate). Sketch/app-partition sizes are static per
+// build; NVS usage drifts as records accrue, so this refreshes alongside
+// the clock push. Cheap: two lookups, no flash I/O.
+static void reportStorageInfo() {
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  uint32_t nvsUsed = 0, nvsTotal = 0;
+  nvs_stats_t st;
+  if (nvs_get_stats(NULL, &st) == ESP_OK) {
+    nvsUsed  = (uint32_t)st.used_entries  * 32;  // NVS entries are 32-byte records
+    nvsTotal = (uint32_t)st.total_entries * 32;
+  }
+  wifiSync.setStorageInfo(ESP.getSketchSize(),
+                          running ? running->size : 0,
+                          nvsUsed, nvsTotal);
+}
+
+// Reminders: dashboard-owned speech-bubble nags, cached in NVS for offline
+// boots. A fresh device falls back to these built-ins until the first sync.
+static ReminderInfo reminderCfg[MAX_REMINDERS];
+static int          reminderCfgCount = 0;
+static int16_t      reminderDays[MAX_REMINDERS];
+
+static void reminderDismissCB(int index, int windowStartDoy) {
+  if (index < 0 || index >= MAX_REMINDERS) return;
+  reminderDays[index] = (int16_t)windowStartDoy;
+  storage.saveReminderDays(reminderDays);
+}
+
+static void seedDefaultReminders() {
+  auto set = [](ReminderInfo& r, uint8_t h, uint8_t m, uint16_t dur, const char* msg) {
+    r.enabled = 1; r.hour = h; r.minute = m; r.durationMin = dur;
+    strncpy(r.message, msg, REMINDER_MSG_LEN - 1);
+    r.message[REMINDER_MSG_LEN - 1] = '\0';
+  };
+  set(reminderCfg[0], 14, 0, 600, "brush your teeth!");   // afternoon, to midnight
+  set(reminderCfg[1],  0, 30, 210, "brush your teeth!");  // late night, to 04:00
+  set(reminderCfg[2],  9, 0, 180, "time to study!");
+  set(reminderCfg[3], 15, 30, 150, "read something!");
+  reminderCfgCount = 4;
 }
 
 // Hang app: per-stage last/best (bar hang / scapula / L-sit), NVS-backed.
@@ -1016,6 +1060,13 @@ void setup() {
   ui.setHangDoneCB(hangDoneCB);
   hangState = storage.loadHangState();
   ui.setHangStats(hangState.lastMs, hangState.bestMs);
+  ui.setReminderDismissCB(reminderDismissCB);
+  reminderCfgCount = storage.loadReminders(reminderCfg);
+  if (reminderCfgCount == 0) seedDefaultReminders();
+  ui.setReminders(reminderCfg, reminderCfgCount);
+  storage.loadReminderDays(reminderDays);
+  ui.setReminderDismissedDays(reminderDays);
+  reportStorageInfo();  // storage report rides every sync from the first one
   // Restore the last-synced quest/goal lists from NVS so they don't
   // vanish on reboot while waiting for the next sync.
   {
@@ -1107,6 +1158,14 @@ static void applySyncResults() {
   storage.saveQuests(wifiSync.getQuests(), wifiSync.getQuestCount());
   storage.saveGoals(wifiSync.getGoals(), wifiSync.getGoalCount());
   storage.saveTrophies(wifiSync.getTrophies(), wifiSync.getTrophyCount());
+  // Reminders: only when the server actually sent the key (hasReminders),
+  // so a pre-feature server can't wipe the cache/defaults.
+  if (wifiSync.hasReminders()) {
+    reminderCfgCount = wifiSync.getReminderCount();
+    memcpy(reminderCfg, wifiSync.getReminders(), sizeof(ReminderInfo) * MAX_REMINDERS);
+    ui.setReminders(reminderCfg, reminderCfgCount);
+    storage.saveReminders(reminderCfg, reminderCfgCount);
+  }
 
   // One-shot XP reset from the dashboard (Options tab): applied exactly once
   // per token, remembered across reboots.
@@ -1395,7 +1454,8 @@ void loop() {
     if (millis() - lastClockPush > 5000 && timeKeeper.hasSync()) {
       lastClockPush = millis();
       WallDate t = timeKeeper.now();
-      ui.updateClock(t.hour, t.minute);
+      ui.updateClock(t.hour, t.minute, t.dayOfYear);
+      reportStorageInfo();  // keep the NVS usage figure fresh
     }
   }
 

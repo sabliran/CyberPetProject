@@ -159,6 +159,26 @@ typedef void (*PlankDoneCB)(uint32_t heldMs);
 // persists them per stage (HangState in storage).
 typedef void (*HangDoneCB)(int stage, uint32_t heldMs);
 
+// Reminders: dashboard-configured daily speech bubbles from Koko ("brush
+// your teeth!", "time to study!"). Each has a start time and a window
+// length (may cross midnight); within the window the bubble shows until
+// tapped away, once per day. The list is dashboard-owned — synced like
+// quests and cached to NVS for offline boots; firmware seeds defaults on
+// a fresh device.
+#define MAX_REMINDERS    6
+#define REMINDER_MSG_LEN 40
+struct ReminderInfo {
+  uint8_t  enabled;
+  uint8_t  hour;
+  uint8_t  minute;
+  uint16_t durationMin;             // window length in minutes (1..1439)
+  char     message[REMINDER_MSG_LEN];
+};
+// Fired when a bubble is tapped away: slot index + the day-of-year the
+// window STARTED (a past-midnight window belongs to the day it began), so
+// the sketch can persist the dismissal stamps.
+typedef void (*ReminderDismissCB)(int index, int windowStartDoy);
+
 // Device settings (swipe-up screen). Owned by the UI; the board sketch
 // registers the callback to persist them and apply the hardware-facing ones
 // (panel brightness, speaker volume, auto-sleep timeout). The UI applies the
@@ -198,7 +218,17 @@ public:
   void showTrophyPill();
   void sedentaryNudge();       // trigger sedentary state (also called by sim `s` key)
   void updateBattery(int pct, bool charging = false); // pct 0-100; -1 = unknown; call periodically from loop()
-  void updateClock(int hour, int minute); // pet-screen clock; hidden until first call (sketch gates on clock validity)
+  void updateClock(int hour, int minute, int dayOfYear); // pet-screen clock + reminder trigger; hidden until first call (sketch gates on clock validity)
+
+  // Reminders: within an active window Koko holds up the speech bubble
+  // (it follows the pet like the HP bar). If several are active the
+  // lowest slot shows first; dismissing it reveals the next. Tapping
+  // dismisses that reminder for the day (per-day stamps restored at boot
+  // via setReminderDismissedDays; re-arming is automatic — a new day is a
+  // new window-start day).
+  void setReminders(const ReminderInfo* list, int count);
+  void setReminderDismissedDays(const int16_t days[MAX_REMINDERS]);
+  void setReminderDismissCB(ReminderDismissCB cb) { reminderDismissCB = cb; }
 
   // Quest screen (pet screen swipe-right). Data comes from the dashboard sync
   // response; call setQuests after every successful sync.
@@ -593,6 +623,20 @@ private:
   lv_obj_t*  moodLabel;
   lv_obj_t*  healthLabel;
   lv_obj_t*  healthBar;
+  lv_obj_t*  remBubble;        // speech bubble; follows the pet like the HP bar
+  lv_obj_t*  remBubbleTail;    // the little chevron that makes it "speak"
+  lv_obj_t*  remBubbleText;
+  ReminderInfo reminders[MAX_REMINDERS];
+  int        reminderCount;
+  int16_t    remDismissedDoy[MAX_REMINDERS];  // window-start DOY when dismissed; -1 = not
+  int        remActive;        // slot the bubble currently shows; -1 = hidden
+  int        clockHour;        // last time seen by updateClock; -1 until valid
+  int        clockMinute;
+  int        clockDoy;
+  ReminderDismissCB reminderDismissCB = nullptr;  // deliberately NOT reset in init()
+  bool reminderActiveNow(int i) const;      // window contains "now" (midnight-wrap aware)
+  int  reminderWindowStartDoy(int i) const; // the day this window began
+  void refreshReminderBubble();
   void positionHealthBar();                     // pin the HP bar above the sprite
   static void healthFollowCB(lv_timer_t* t);    // ~12 Hz follower while pet screen shown
 
@@ -715,6 +759,7 @@ private:
   static void sleepReturnTimerCB(lv_timer_t* t);
   static void petLongPressCB(lv_event_t* e);    // press & hold = manual sync
   static void blobPatCB(lv_event_t* e);         // quick tap on the blob = love reaction
+  static void remBubbleTapCB(lv_event_t* e);    // tap the bubble = dismiss for today
   static void pomTapCB(lv_event_t* e);          // double-tap = play/pause on focus screen
   static void syncTimeoutCB(lv_timer_t* t);
   static void syncOverlayDeleteCB(lv_anim_t* a);

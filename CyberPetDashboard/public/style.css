@@ -429,6 +429,9 @@ body {
 .storage-fill--nvs {
   background: linear-gradient(90deg, var(--blob), var(--creature));
 }
+.storage-fill--flash {
+  background: linear-gradient(90deg, #E8A050, #FFD060);
+}
 .storage-fill--warn { background: var(--xp); }
 .storage-fill--crit { background: #E36F6F; }
 
@@ -795,4 +798,32 @@ body {
   display: block;
   background: #0A0A14;
   border-radius: 10px;
+}
+
+/* Reminders editor (options tab): spans the whole optgrid row so the
+   message + time + duration inputs fit on one line. */
+.panel--reminders { grid-column: 1 / -1; }
+/* Reminders editor (options tab) */
+.reminder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.reminder-row .rem-msg { flex: 1; min-width: 120px; }
+.reminder-row .rem-dur-h, .reminder-row .rem-dur-m { width: 52px; }
+.reminder-row select.rem-h, .reminder-row select.rem-m { width: 58px; }
+.reminder-dur, .reminder-at, .reminder-on {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  color: #8890A8;
+  font-size: 0.85rem;
+}
+.reminder-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
 }

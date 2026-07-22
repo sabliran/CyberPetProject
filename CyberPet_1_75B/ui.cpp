@@ -211,6 +211,9 @@ void PetUI::init(Pet* petPtr, HabitTracker* trackerPtr) {
   hangPassed[0] = hangPassed[1] = hangPassed[2] = false;
   plankRunning = false; plankStartMs = 0; plankLastMs = 0; plankBestMs = 0;
   for (int i = 0; i < 3; i++) { hangLastMs[i] = 0; hangBestMs[i] = 0; }
+  reminderCount = 0; remActive = -1;
+  for (int i = 0; i < MAX_REMINDERS; i++) remDismissedDoy[i] = -1;
+  clockHour = -1; clockMinute = 0; clockDoy = 0;
   plankClockTimer = nullptr;
   sitRunning = false; sitAlerting = false; sitIntervalMin = 20;
   sitStartMs = 0; sitLastChimeMs = 0; sitClockTimer = nullptr;
@@ -386,6 +389,34 @@ void PetUI::buildPetScreen() {
   lv_obj_set_style_radius(healthBar, 5, LV_PART_INDICATOR);
   positionHealthBar();
   lv_timer_create(healthFollowCB, 80, this);
+
+  // Reminder speech bubble: light so it pops on the black screen, floats
+  // above Koko's head (positionHealthBar moves it with the pet), tap =
+  // done for today. The chevron underneath is the speech tail — a
+  // separate sibling because children clip to the bubble's bounds.
+  remBubble = lv_obj_create(petScreen);
+  lv_obj_set_size(remBubble, 200, 42);
+  lv_obj_set_style_radius(remBubble, 21, 0);
+  lv_obj_set_style_bg_color(remBubble, lv_color_hex(0xE8F0FF), 0);
+  lv_obj_set_style_bg_opa(remBubble, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(remBubble, 0, 0);
+  lv_obj_set_style_pad_all(remBubble, 0, 0);
+  lv_obj_clear_flag(remBubble, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(remBubble, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(remBubble, remBubbleTapCB, LV_EVENT_CLICKED, this);
+  remBubbleText = lv_label_create(remBubble);
+  lv_label_set_text(remBubbleText, "");
+  lv_label_set_long_mode(remBubbleText, LV_LABEL_LONG_DOT);  // messages are dashboard text
+  lv_obj_set_width(remBubbleText, 180);
+  lv_obj_set_style_text_align(remBubbleText, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(remBubbleText, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(remBubbleText, lv_color_hex(0x10142A), 0);
+  lv_obj_center(remBubbleText);
+  remBubbleTail = lv_label_create(petScreen);
+  lv_label_set_text(remBubbleTail, LV_SYMBOL_DOWN);
+  lv_obj_set_style_text_color(remBubbleTail, lv_color_hex(0xE8F0FF), 0);
+  lv_obj_add_flag(remBubble, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(remBubbleTail, LV_OBJ_FLAG_HIDDEN);
 
   lv_obj_add_event_cb(petScreen, petGestureCB, LV_EVENT_GESTURE, this);
   lv_obj_add_flag(petScreen, LV_OBJ_FLAG_CLICKABLE);
@@ -937,6 +968,18 @@ void PetUI::positionHealthBar() {
   lv_obj_set_size(healthBar, barW, 6);
   lv_obj_set_pos(healthBar, cx - barW / 2, cy - drawn / 2 - 14);
   lv_obj_set_pos(healthLabel, cx - 65, cy - drawn / 2 - 32);
+
+  // Speech bubble rides above the nameplate; clamped so a pet roaming near
+  // the top of the round glass doesn't push it off-screen.
+  if (remBubble && !lv_obj_has_flag(remBubble, LV_OBJ_FLAG_HIDDEN)) {
+    int bx = cx - 100;
+    int by = cy - drawn / 2 - 32 - 52;
+    if (by < 28) by = 28;
+    if (bx < 30) bx = 30;
+    if (bx > 466 - 30 - 200) bx = 466 - 30 - 200;
+    lv_obj_set_pos(remBubble, bx, by);
+    lv_obj_set_pos(remBubbleTail, bx + 100 - 8, by + 38);
+  }
 }
 
 void PetUI::healthFollowCB(lv_timer_t* t) {
@@ -3983,8 +4026,86 @@ void PetUI::buildWalkScreen() {
   lv_obj_add_event_cb(walkScreen, walkGestureCB, LV_EVENT_GESTURE, this);
 }
 
-void PetUI::updateClock(int hour, int minute) {
+void PetUI::updateClock(int hour, int minute, int dayOfYear) {
   lv_label_set_text_fmt(clockLabel, "%02d:%02d", hour, minute);
+  clockHour   = hour;
+  clockMinute = minute;
+  clockDoy    = dayOfYear;
+  refreshReminderBubble();
+}
+
+// A window may cross midnight (e.g. 23:00 for 3h): minutes-since-start
+// modulo one day keeps the containment test branch-free.
+bool PetUI::reminderActiveNow(int i) const {
+  const ReminderInfo& r = reminders[i];
+  if (!r.enabled || clockHour < 0) return false;
+  int now   = clockHour * 60 + clockMinute;
+  int start = (int)r.hour * 60 + (int)r.minute;
+  int since = (now - start + 1440) % 1440;
+  return since < (int)r.durationMin;
+}
+
+// The day this window began: a bubble showing at 00:10 from a 23:00 start
+// belongs to yesterday, so dismissing it can't eat today's window too.
+// (Fuzzy across new year — a daily nag doesn't care about leap years.)
+int PetUI::reminderWindowStartDoy(int i) const {
+  int now   = clockHour * 60 + clockMinute;
+  int start = (int)reminders[i].hour * 60 + (int)reminders[i].minute;
+  if (now >= start) return clockDoy;
+  return clockDoy > 1 ? clockDoy - 1 : 366;
+}
+
+// Show the lowest active, undismissed reminder; dismissing one reveals the
+// next. Re-arming is automatic: a new day gives every window a new start
+// day, which no stamp matches yet.
+void PetUI::refreshReminderBubble() {
+  if (!remBubble || clockHour < 0) return;
+  int pick = -1;
+  for (int i = 0; i < reminderCount; i++) {
+    if (reminderActiveNow(i) && remDismissedDoy[i] != reminderWindowStartDoy(i)) {
+      pick = i;
+      break;
+    }
+  }
+  remActive = pick;
+  if (pick >= 0) {
+    lv_label_set_text(remBubbleText, reminders[pick].message);
+    lv_obj_clear_flag(remBubble, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(remBubbleTail, LV_OBJ_FLAG_HIDDEN);
+    positionHealthBar();  // snap to the pet now, not at the next 80ms tick
+  } else {
+    lv_obj_add_flag(remBubble, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(remBubbleTail, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void PetUI::setReminders(const ReminderInfo* list, int count) {
+  if (count < 0) count = 0;
+  if (count > MAX_REMINDERS) count = MAX_REMINDERS;
+  reminderCount = count;
+  for (int i = 0; i < count; i++) {
+    reminders[i] = list[i];
+    reminders[i].message[REMINDER_MSG_LEN - 1] = '\0';
+  }
+  refreshReminderBubble();
+}
+
+void PetUI::setReminderDismissedDays(const int16_t days[MAX_REMINDERS]) {
+  for (int i = 0; i < MAX_REMINDERS; i++) remDismissedDoy[i] = days[i];
+  refreshReminderBubble();
+}
+
+void PetUI::remBubbleTapCB(lv_event_t* e) {
+  PetUI* self = (PetUI*)lv_event_get_user_data(e);
+  // Swipes emit a CLICKED on release; same guard as the other tap targets.
+  if (lv_tick_get() - self->lastGestureMs < 600) return;
+  int i = self->remActive;
+  if (i < 0) return;  // clock rolled out of the window under the tap
+  self->remDismissedDoy[i] = (int16_t)self->reminderWindowStartDoy(i);
+  self->refreshReminderBubble();  // may reveal the next active reminder
+  if (self->reminderDismissCB) self->reminderDismissCB(i, self->remDismissedDoy[i]);
+  self->blobLoveReaction();  // Koko approves of good habits
+  if (self->soundCB) self->soundCB(SOUND_HABIT_DONE);
 }
 
 void PetUI::walkPocketBtnCB(lv_event_t* e) {
