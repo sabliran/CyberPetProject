@@ -39,6 +39,7 @@
 #include "habits.h"
 #include "storage.h"
 #include "ui.h"
+#include "dict_ui.h"   // dictScreenActive/hideDictScreen for the BOOT exit
 #include "wifi_sync.h"
 #include "timekeeping.h"
 
@@ -1659,6 +1660,10 @@ void loop() {
         } else if (ui.isSquatRunning()) {
           // Squat session: same contract — taps are reps, BOOT is DONE.
           ui.finishSquatSession();
+        } else if (dictScreenActive()) {
+          // Dictionary: BOOT is the ONLY exit (no gesture handlers there —
+          // swipes are roller flicks/list scrolls and must never quit it).
+          hideDictScreen();
         } else {
           ui.showAppsMenu();
         }

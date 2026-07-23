@@ -296,7 +296,10 @@ static void handle_sdl_events() {
             ui.pomodoroGuiltTrip();
             break;
           case SDLK_a:
-            ui.showAppsMenu();  // stands in for the board's physical button
+            // Stands in for the board's BOOT button: exits the dictionary
+            // when it's open (its only exit), apps menu otherwise.
+            if (dictScreenActive()) hideDictScreen();
+            else                    ui.showAppsMenu();
             break;
           case SDLK_g:
             // Dictionary toggle. The real navigation is the pet screen's

@@ -143,28 +143,19 @@ static void searchBtnCB(lv_event_t* e) {
   lv_scr_load_anim(listScr, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
 }
 
-// Swipe up closes, exactly like Focus did when it owned the pet screen's
-// swipe-down slot. Attached to the wheel (and failure) screen ONLY: the word
-// list and definition screens deliberately have no gesture handler, so
-// scrolling them can never trigger navigation — their back buttons are the
-// only way out. On the wheel itself a vertical drag on the roller is a
-// scroll, which LVGL's indev suppresses gestures for (same mechanism the
-// vertical-only lists in ui.cpp rely on).
-static void wheelGestureCB(lv_event_t* e) {
-  (void)e;
-  lv_indev_wait_release(lv_indev_get_act());  // don't click-through on release
-  if (lv_indev_get_gesture_dir(lv_indev_get_act()) != LV_DIR_TOP) return;
-  hideDictScreen();
-}
-
+// NO gesture handler on ANY dictionary screen (July 2026, user request):
+// swipes here are roller flicks and list scrolls, and an accidental gesture
+// must never quit mid-search — same trap the push-up/squat screens fixed.
+// The physical BOOT button is the only exit (board sketch checks
+// dictScreenActive() before its apps-menu fallback; the sim's 'a' key
+// mirrors it). Internal back buttons only walk the dict's own screens.
 static void buildWheelScreen() {
   wheelScr = makeScreen();
-  lv_obj_add_event_cb(wheelScr, wheelGestureCB, LV_EVENT_GESTURE, NULL);
 
-  // Same dim exit hint slot as Focus used (bottom circle is ~148 px wide
-  // at this y; 14 pt fits).
+  // Same dim hint slot as other screens (bottom circle is ~148 px wide at
+  // this y; 14 pt fits), same wording as the push/squat BOOT contract.
   lv_obj_t* exitHint = lv_label_create(wheelScr);
-  lv_label_set_text(exitHint, "swipe " LV_SYMBOL_UP " for Koko");
+  lv_label_set_text(exitHint, "BOOT button = exit");
   lv_obj_align(exitHint, LV_ALIGN_BOTTOM_MID, 0, -12);
   lv_obj_set_style_text_color(exitHint, lv_color_hex(0x2A2A44), 0);
   lv_obj_set_style_text_font(exitHint, &lv_font_montserrat_14, 0);
@@ -428,7 +419,6 @@ static void failBackCB(lv_event_t* e) {
 
 static void buildFailScreen() {
   failScr = makeScreen();
-  lv_obj_add_event_cb(failScr, wheelGestureCB, LV_EVENT_GESTURE, NULL);
   lv_obj_t* msg = lv_label_create(failScr);
   lv_label_set_text(msg, "No dictionary on SD card");
   lv_obj_set_style_text_font(msg, &lv_font_montserrat_20, 0);
@@ -439,8 +429,9 @@ static void buildFailScreen() {
 
 void showDictScreen() {
   // Entry/exit animations mirror Focus, the swipe-down slot's previous
-  // owner: slide in from the bottom, slide back out the top. Transitions
-  // between the dict's own screens stay FADE_ON like ui.cpp's sub-screens.
+  // owner: slide in from the bottom, slide back out the top (exit now rides
+  // the BOOT button, not a swipe). Transitions between the dict's own
+  // screens stay FADE_ON like ui.cpp's sub-screens.
   if (!dictScreenActive()) prevScreen = lv_scr_act();
   if (!dictInit()) {  // idempotent; retried on every open until it lands
     if (!failScr) buildFailScreen();
