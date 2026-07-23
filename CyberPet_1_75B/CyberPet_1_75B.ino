@@ -1049,6 +1049,10 @@ void setup() {
   lv_indev_drv_init(&indev_drv);
   indev_drv.type    = LV_INDEV_TYPE_POINTER;
   indev_drv.read_cb = touchReadCB;
+  // A press must travel this far before it becomes a scroll (default 10).
+  // Finger taps wobble past 10 px on the glass, which turned dictionary
+  // roller taps into micro-scrolls that never registered the letter.
+  indev_drv.scroll_limit = 25;
   lv_indev_drv_register(&indev_drv);
 
   // 2 ms LVGL tick from esp_timer (example 06's pattern).

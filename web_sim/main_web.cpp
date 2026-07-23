@@ -358,6 +358,9 @@ int main() {
   lv_indev_drv_init(&indev_drv);
   indev_drv.type = LV_INDEV_TYPE_POINTER;
   indev_drv.read_cb = sdl_mouse_read_cb;
+  // Match the device's tap-vs-scroll threshold (see CyberPet_1_75B.ino:
+  // finger taps wobble past the 10 px default and ate roller letter taps).
+  indev_drv.scroll_limit = 25;
   lv_indev_drv_register(&indev_drv);
 
   habits.init();
