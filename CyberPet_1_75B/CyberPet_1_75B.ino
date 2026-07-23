@@ -40,6 +40,7 @@
 #include "storage.h"
 #include "ui.h"
 #include "dict_ui.h"   // dictScreenActive/hideDictScreen for the BOOT exit
+#include "dict_update.h"  // WiFi dictionary pull (dashboard dictPushToken)
 #include "wifi_sync.h"
 #include "timekeeping.h"
 
@@ -597,6 +598,8 @@ uint32_t lastSyncOkMs     = 0;  // last successful sync (settings-screen WiFi st
 const uint32_t SYNC_INTERVAL_MS     = 60UL * 1000UL;
 const uint32_t SYNC_INTERVAL_USB_MS = 10UL * 1000UL;  // faster cadence when docked over USB
 static int lastXpResetToken = 0;  // last dashboard XP-reset applied (NVS-backed)
+static int lastDictToken    = 0;  // last dictionary push applied (NVS-backed)
+static int dictUpdateAttempts = 0;  // per-boot retry cap for failed downloads
 uint32_t lastConfigCheck  = 0;
 const uint32_t CONFIG_CHECK_MS   = 5UL * 1000UL;
 
@@ -1168,6 +1171,7 @@ void setup() {
   lastResetYear = storage.loadLastResetYear();
   lastResetDOY  = storage.loadLastResetDay();
   lastXpResetToken = storage.loadXpResetToken();
+  lastDictToken    = storage.loadDictToken();
   lastDailyCheck  = millis();
   lastSyncAttempt = millis();
 
@@ -1227,6 +1231,41 @@ static void applySyncResults() {
     storage.savePet(pet.getState());
     storage.saveXpResetToken(lastXpResetToken);
     ui.refreshPetScreen();
+  }
+
+  // One-shot dictionary push (tools/push_dict.py -> dashboard): download the
+  // new SD files over WiFi and swap them in. Same applied-once-per-token
+  // contract as the XP reset above; the token only persists on success, and
+  // the per-boot attempt cap keeps a broken server from re-blocking every
+  // sync with a 30 s failed download. Deferred while the dictionary UI is
+  // open — its list rows hold record indexes into the files being replaced.
+  if (wifiSync.getDictPushToken() > lastDictToken &&
+      sdAvailable && wifiSync.isConnected() && !dictScreenActive() &&
+      dictUpdateAttempts < 3) {
+    String dictUrl = wifiSync.getServerUrl();
+    if (dictUrl.length() > 0) {
+      dictUpdateAttempts++;
+      Serial.printf("dict update: token %d > %d, downloading from %s\n",
+                    wifiSync.getDictPushToken(), lastDictToken, dictUrl.c_str());
+      // Whole-screen notice, drawn once; loop() (and LVGL) then block for
+      // the download, so the display just holds this frame.
+      lv_obj_t* busy = lv_obj_create(NULL);
+      lv_obj_set_style_bg_color(busy, lv_color_hex(0x000000), 0);
+      lv_obj_t* msg = lv_label_create(busy);
+      lv_label_set_text(msg, "Updating dictionary...\n\ntakes about a minute,\ndon't power off");
+      lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+      lv_obj_set_style_text_color(msg, lv_color_hex(0x3EE8A0), 0);
+      lv_obj_center(msg);
+      lv_obj_t* prev = lv_scr_act();
+      lv_scr_load(busy);
+      lv_refr_now(NULL);
+      if (dictUpdateRun(dictUrl.c_str())) {
+        lastDictToken = wifiSync.getDictPushToken();
+        storage.saveDictToken(lastDictToken);
+      }
+      lv_scr_load(prev);
+      lv_obj_del(busy);
+    }
   }
   lastSyncAttempt = millis();
 }

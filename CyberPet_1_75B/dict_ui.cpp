@@ -27,11 +27,10 @@ static lv_obj_t* wordLabel  = NULL;
 static lv_obj_t* matchLabel = NULL;
 static lv_obj_t* searchBtn  = NULL;
 static lv_obj_t* rollerL    = NULL;  // twin A-Z rollers: park each in a
-static lv_obj_t* rollerR    = NULL;  // different alphabet region, tap appends
+static lv_obj_t* rollerR    = NULL;  // different region; side "+" buttons type
 
 static char     word[DICT_KEY_LEN + 1];
 static int      wordLen  = 0;
-static uint16_t pressSel = 0;  // roller selection at press time ("moved" guard)
 
 /* ---- shared widgets ---------------------------------------------------- */
 
@@ -107,23 +106,15 @@ static void updateWheel() {
   else        lv_obj_add_state(searchBtn, LV_STATE_DISABLED);
 }
 
-// Shared by both rollers; a single pressSel is safe because press/click
-// always arrive as a pair from the same (single-touch) interaction.
-static void rollerEventCB(lv_event_t* e) {
-  lv_obj_t* r = lv_event_get_target(e);
-  lv_event_code_t code = lv_event_get_code(e);
-  if (code == LV_EVENT_PRESSED) {
-    pressSel = lv_roller_get_selected(r);
-  } else if (code == LV_EVENT_CLICKED) {
-    // The "moved" guard: a click that changed the roller value (tapping a
-    // neighboring letter scrolls to it) only selects — a second click on
-    // the now-centered letter appends it.
-    if (lv_roller_get_selected(r) != pressSel) return;
-    if (wordLen >= DICT_KEY_LEN) return;
-    word[wordLen++] = 'a' + (char)lv_roller_get_selected(r);
-    word[wordLen]   = '\0';
-    updateWheel();
-  }
+// The side "+" buttons are the ONLY letter input (user request): rollers
+// just scroll/pick, and each button appends its own roller's centered
+// letter. user_data carries the paired roller.
+static void addLetterCB(lv_event_t* e) {
+  lv_obj_t* r = (lv_obj_t*)lv_obj_get_user_data(lv_event_get_target(e));
+  if (wordLen >= DICT_KEY_LEN) return;
+  word[wordLen++] = 'a' + (char)lv_roller_get_selected(r);
+  word[wordLen]   = '\0';
+  updateWheel();
 }
 
 static void deleteBtnCB(lv_event_t* e) {
@@ -180,8 +171,8 @@ static void buildWheelScreen() {
 
   // Twin rollers, montserrat_32 letters (user request: bigger + a second
   // wheel). Park each in a different alphabet region to halve scroll
-  // travel; a tap on either appends its centered letter. 110 px wide each
-  // at center ±63: outer edges ±118 from center, well inside the glass.
+  // travel; the rollers only scroll/pick — the outer "+" buttons below do
+  // the typing.
   static char opts[26 * 2];  // "A\nB\n...\nZ"
   char* p = opts;
   for (char c = 'A'; c <= 'Z'; c++) {
@@ -208,9 +199,20 @@ static void buildWheelScreen() {
     lv_obj_set_style_text_color(r, lv_color_hex(COL_DIM), 0);
     lv_obj_set_style_bg_color(r, lv_color_hex(COL_BORDER2), LV_PART_SELECTED);
     lv_obj_set_style_text_color(r, lv_color_hex(COL_ACCENT), LV_PART_SELECTED);
-    lv_obj_add_event_cb(r, rollerEventCB, LV_EVENT_ALL, NULL);
   }
   lv_roller_set_selected(rollerR, 13, LV_ANIM_OFF);  // start right wheel at N
+
+  // One "+" button on the outer side of each roller — the only way a letter
+  // registers (user request). 60x100 at center ±192: worst corner ~229 px
+  // from screen center, inside the 233 px glass radius.
+  for (int i = 0; i < 2; i++) {
+    lv_obj_t* add = makeBtn(wheelScr, LV_SYMBOL_PLUS, COL_ACCENT, addLetterCB);
+    lv_obj_set_size(add, 60, 100);
+    lv_obj_align(add, LV_ALIGN_CENTER, i == 0 ? -192 : 192, 6);
+    lv_obj_set_user_data(add, *rollers[i]);
+    lv_obj_set_style_text_font(lv_obj_get_child(add, 0),
+                               &lv_font_montserrat_20, 0);
+  }
 
   // Bottom row, round-bezel safe: [backspace] [SEARCH] [clear]. Row center
   // sits 153 px below screen center; outer button corners stay inside the
@@ -413,10 +415,20 @@ static void buildDefScreen(uint32_t index) {
 
   for (int i = 0; i < entry.senseCount; i++) {
     lv_obj_t* sense = lv_label_create(body);
-    // "i.pos definition" — accent-recolored number/pos prefix.
-    char buf[320];
-    snprintf(buf, sizeof(buf), "#3EE8A0 %d.%s#  %s", i + 1,
-             entry.senses[i].pos, entry.senses[i].def);
+    // "i.pos definition" — accent-recolored number/pos prefix — then the
+    // WordNet extras (July 2026) as dim recolored lines. snprintf's return
+    // clamps to the buffer, so a giant sense just loses its tail extras.
+    const DictSense* s = &entry.senses[i];
+    char buf[960];
+    int n = snprintf(buf, sizeof(buf), "#3EE8A0 %d.%s#  %s", i + 1,
+                     s->pos, s->def);
+    const char* tags[4] = { "e.g.", "syn:", "opp:", "type of:" };
+    const char* vals[4] = { s->ex, s->syn, s->ant, s->kind };
+    for (int t = 0; t < 4 && n < (int)sizeof(buf); t++) {
+      if (!vals[t][0]) continue;
+      n += snprintf(buf + n, sizeof(buf) - n, "\n#6868AA %s %s#",
+                    tags[t], vals[t]);
+    }
     lv_label_set_recolor(sense, true);
     lv_label_set_text(sense, buf);
     lv_obj_set_width(sense, LV_PCT(100));

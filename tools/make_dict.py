@@ -9,8 +9,13 @@ Turns WordNet 3.1 into the two flat files the firmware reads from SD:
                                [length: uint32 LE]
   tools/dict_out/defs.dat    per-word UTF-8 text record:
                                line 1: display form(s), "/"-separated if merged
-                               then one sense per line: "pos|definition"
-                               (pos = n/v/adj/adv), senses in WordNet order.
+                               then one sense per line:
+                               "pos|definition|examples|synonyms|antonyms|typeof"
+                               (pos = n/v/adj/adv; examples " / "-joined, capped
+                               at 2; synonyms/antonyms ", "-joined, capped at
+                               5/3; typeof = first hypernym headword; trailing
+                               empty fields dropped, so a bare "pos|definition"
+                               line stays valid), senses in WordNet order.
   tools/dict_out/dict_format.h  generated constants for the firmware
                                (DICT_KEY_LEN, DICT_RECORD_SIZE, DICT_WORD_COUNT).
                                Lives here for now; a later phase moves it.
@@ -58,6 +63,12 @@ def display_form(lemma):
     return lemma.replace("_", " ").replace("-", " ")
 
 
+def clean_field(text):
+    """One '|'-separated field: collapse whitespace (kills stray newlines)
+    and replace the separator itself so it can never split a line early."""
+    return " ".join(text.replace("|", "/").split())
+
+
 def load_wordnet():
     import nltk
     from nltk.corpus.reader.wordnet import WordNetCorpusReader
@@ -77,8 +88,8 @@ def load_wordnet():
 
 
 def build_entries(wn):
-    """Returns ({key: {"forms": [...], "senses": [(pos, def), ...]}},
-    dropped_short, merged_collisions)."""
+    """Returns ({key: {"forms": [...], "senses": [(pos, def, ex, syn, ant,
+    typeof), ...]}}, dropped_short, merged_collisions)."""
     entries = {}
     dropped = 0
     merged = 0
@@ -91,19 +102,36 @@ def build_entries(wn):
         senses = []
         for synset in wn.synsets(lemma):  # WordNet sense order per POS
             # Recover the original-case headword ("Earth" for index lemma
-            # "earth") from the synset's own lemma list.
+            # "earth") from the synset's own lemma list. Keep the matching
+            # lemma object too — antonyms hang off the lemma, not the synset.
             name = lemma
+            own = None
             for cand in synset.lemmas():
                 if cand.name().lower() == lemma:
                     name = cand.name()
+                    own = cand
                     break
             form = display_form(name)
             if form not in forms:
                 forms.append(form)
-            # Definitions are single-line in WordNet; strip defensively so a
-            # stray newline can never break the one-sense-per-line format.
-            definition = " ".join(synset.definition().split())
-            senses.append((POS_MAP[synset.pos()], definition))
+            definition = clean_field(synset.definition())
+            # Extras (July 2026 user request), all capped to keep the worst
+            # merged record — and the firmware's static text buffer — small:
+            # 2 examples, 5 synonyms (other lemmas of this synset), 3
+            # antonyms, first hypernym as the "type of" line.
+            ex = " / ".join(clean_field(e) for e in synset.examples()[:2])
+            syns = list(dict.fromkeys(
+                display_form(l.name()) for l in synset.lemmas()
+                if l.name().lower() != lemma))[:5]
+            ants = list(dict.fromkeys(
+                display_form(a.name())
+                for a in (own.antonyms() if own else [])))[:3]
+            hyper = synset.hypernyms()
+            typeof = display_form(hyper[0].lemmas()[0].name()) if hyper else ""
+            senses.append((POS_MAP[synset.pos()], definition, ex,
+                           clean_field(", ".join(syns)),
+                           clean_field(", ".join(ants)),
+                           clean_field(typeof)))
         if not senses:
             continue
         if key in entries:  # collision ("re-cover"/"recover"): merge
@@ -134,7 +162,9 @@ def emit(entries):
         for key in keys:
             entry = entries[key]
             lines = ["/".join(entry["forms"])]
-            lines += [f"{pos}|{definition}" for pos, definition in entry["senses"]]
+            # Trailing empty fields are stripped: a sense with no extras is
+            # the old "pos|definition" shape, which the firmware still parses.
+            lines += ["|".join(sense).rstrip("|") for sense in entry["senses"]]
             blob = ("\n".join(lines) + "\n").encode("utf-8")
             max_record = max(max_record, len(blob))
             offset = defs.tell()

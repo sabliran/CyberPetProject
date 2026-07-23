@@ -229,6 +229,13 @@ function readFromDb(db) {
     pushSessions:    kvGet(db, 'pushSessions',    0),
     pullupSessions:  kvGet(db, 'pullupSessions',  0),
     focusSessions:   kvGet(db, 'focusSessions',   0),
+    // One-shot device-command tokens. petResetToken had the same
+    // forgotten-field bug as the history keys above: a container restart
+    // reset it to 0 — below the device's NVS-stored last-applied value —
+    // so dashboard XP resets silently stopped firing until the counter
+    // caught back up.
+    petResetToken:   kvGet(db, 'petResetToken',   0),
+    dictPushToken:   kvGet(db, 'dictPushToken',   0),
   };
 }
 
@@ -236,7 +243,8 @@ const KV_KEYS = [
   'devNotes', 'nextHabitId', 'nextGoalId', 'nextQuestId', 'nextTodoId',
   'nextLogId', 'dashXpTotal', 'configVersion', 'configUpdatedAt', 'settings', 'petState',
   'stepHistory', 'sleepHistory', 'backHistory', 'pushHistory', 'pullupHistory',
-  'focusHistory', 'backSessions', 'pushSessions', 'pullupSessions', 'focusSessions'
+  'focusHistory', 'backSessions', 'pushSessions', 'pullupSessions', 'focusSessions',
+  'petResetToken', 'dictPushToken'
 ];
 
 function writeToDb(db, data) {

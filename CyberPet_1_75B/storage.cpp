@@ -175,6 +175,14 @@ int Storage::loadXpResetToken() {
   return prefs.getInt("xp_reset_tok", 0);
 }
 
+void Storage::saveDictToken(int token) {
+  prefs.putInt("dict_tok", token);
+}
+
+int Storage::loadDictToken() {
+  return prefs.getInt("dict_tok", 0);
+}
+
 void Storage::saveStepState(const StepState& s) {
   StepState cur = loadStepState();
   if (memcmp(&cur, &s, sizeof(StepState)) == 0) return;  // skip no-op flash writes

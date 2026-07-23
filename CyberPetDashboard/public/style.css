@@ -827,3 +827,20 @@ body {
   gap: 10px;
   margin-top: 10px;
 }
+
+/* ---- SD card files panel (Options) --------------------------------------- */
+.sdfile-rows { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 12px; }
+.sdfile-row {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 12px;
+}
+.sdfile-name { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--text); }
+.sdfile-meta { font-size: 12px; color: var(--muted); margin-left: auto; }
+.sdfile-row--missing .sdfile-name { color: var(--muted); }
+.sdfile-chip {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  border: 1px solid var(--line); white-space: nowrap;
+}
+.sdfile-chip--ok  { color: var(--blob); border-color: var(--blob); }
+.sdfile-chip--new { color: var(--xp);   border-color: var(--xp); }

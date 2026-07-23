@@ -432,6 +432,7 @@ bool WifiSync::applySyncResponse(const String& response, Pet* pet, HabitTracker*
 
   // One-shot dashboard commands (see getPetResetToken in wifi_sync.h).
   petResetToken = respDoc["petResetToken"] | petResetToken;
+  dictPushToken = respDoc["dictPushToken"] | dictPushToken;
 
   // Keep config version in sync so checkConfig() doesn't re-trigger immediately.
   lastKnownConfigVersion = respDoc["configVersion"] | lastKnownConfigVersion;

@@ -47,6 +47,7 @@ document.querySelectorAll('.tabnav__btn').forEach(btn => {
       loadReminders();
       loadStorage();
       loadBackupInfo();
+      loadSdFiles();
       loadConfigVersion();
     }
     if (btn.dataset.tab === 'dev') {
@@ -616,6 +617,84 @@ async function loadBackupInfo() {
   document.getElementById('backupInfo').textContent =
     `${c.habits} habits · ${c.quests} quests · ${c.logEntries} log entries · ${fmtBytes(s.dashboard.used)}`;
 }
+
+// ---- SD card files (dictionary push) ---------------------------------------
+// Browser front end for the WiFi dictionary pipeline: upload words.idx /
+// defs.dat into the server's data/dict, then publish — the device pulls the
+// files on its next sync (dictPushToken, see dict_update.cpp).
+
+const SD_FILE_NAMES = ['words.idx', 'defs.dat'];
+
+async function loadSdFiles() {
+  const d = await api('/dict/files');
+  document.getElementById('sdFileRows').innerHTML = d.files.map(f => {
+    if (f.missing) {
+      return `<div class="sdfile-row sdfile-row--missing">
+        <span class="sdfile-name">${escapeHtml(f.name)}</span>
+        <span class="sdfile-meta">not uploaded yet</span></div>`;
+    }
+    const status = f.published
+      ? '<span class="sdfile-chip sdfile-chip--ok">on device</span>'
+      : '<span class="sdfile-chip sdfile-chip--new">not sent yet</span>';
+    return `<div class="sdfile-row">
+      <span class="sdfile-name">${escapeHtml(f.name)}</span>
+      <span class="sdfile-meta">${fmtBytes(f.size)} · ${new Date(f.mtime).toLocaleString()}</span>
+      ${status}</div>`;
+  }).join('');
+  document.getElementById('sdToken').textContent =
+    d.token > 0 ? `token ${d.token}` : '— never published —';
+  document.getElementById('sdPublishedAt').textContent =
+    d.publishedAt ? new Date(d.publishedAt).toLocaleString() : '—';
+  document.getElementById('sdPublishBtn').disabled =
+    d.files.some(f => f.missing);
+}
+
+document.getElementById('sdRefresh').addEventListener('click', loadSdFiles);
+document.getElementById('sdUploadBtn').addEventListener('click', () =>
+  document.getElementById('sdUploadInput').click());
+
+document.getElementById('sdUploadInput').addEventListener('change', async e => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  const bad = files.filter(f => !SD_FILE_NAMES.includes(f.name));
+  if (bad.length) {
+    alert(`Only ${SD_FILE_NAMES.join(' and ')} belong on the card - got: ` +
+          bad.map(f => f.name).join(', '));
+    return;
+  }
+  const btn = document.getElementById('sdUploadBtn');
+  btn.disabled = true;
+  try {
+    for (const f of files) {
+      btn.textContent = `Uploading ${f.name}…`;
+      const res = await fetch(`/api/dict/files/${f.name}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: f,
+      });
+      if (!res.ok) throw new Error(`upload ${f.name}: ${res.status}`);
+    }
+  } catch (err) {
+    alert(`Upload failed: ${err.message}`);
+  }
+  btn.disabled = false;
+  btn.textContent = 'Upload files…';
+  loadSdFiles();
+});
+
+document.getElementById('sdPublishBtn').addEventListener('click', async () => {
+  if (!confirm('Send the dictionary files to the watch? It downloads ~36 MB ' +
+               'over WiFi on its next sync (about 3 minutes, screen busy).')) return;
+  try {
+    await api('/dict/publish', { method: 'POST' });
+    const flag = document.getElementById('sdFlag');
+    flag.classList.add('show');
+    setTimeout(() => flag.classList.remove('show'), 4000);
+  } catch (err) {
+    alert(`Publish failed: ${err.message}`);
+  }
+  loadSdFiles();
+});
 
 // ---- History --------------------------------------------------------------
 

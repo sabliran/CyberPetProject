@@ -65,6 +65,12 @@ bool dictInit() {
   return ready;
 }
 
+void dictReset() {
+  if (!ready) return;
+  ready = false;
+  dictClose();
+}
+
 int dictExact(const char* key) {
   if (!ready || !key) return -1;
   char want[DICT_KEY_LEN];
@@ -133,13 +139,26 @@ bool dictReadEntry(uint32_t index, DictEntry* out) {
       haveDisplay = true;
     } else {
       if (out->senseCount >= DICT_MAX_SENSES) break;  // giant merged entries
-      char* bar = strchr(line, '|');
-      if (bar) {  // "pos|definition"
-        *bar = '\0';
+      // "pos|definition|examples|synonyms|antonyms|typeof" — trailing empty
+      // fields are stripped by the generator, so split what's there and
+      // default the rest to "".
+      char* fields[6];
+      int nf = 0;
+      for (char* p = line; p && nf < 6; ) {
+        fields[nf++] = p;
+        char* bar = strchr(p, '|');
+        if (bar) { *bar = '\0'; p = bar + 1; }
+        else break;
+      }
+      if (nf >= 2) {
         DictSense* s = &out->senses[out->senseCount++];
-        strncpy(s->pos, line, sizeof(s->pos) - 1);
+        strncpy(s->pos, fields[0], sizeof(s->pos) - 1);
         s->pos[sizeof(s->pos) - 1] = '\0';
-        s->def = bar + 1;
+        s->def  = fields[1];
+        s->ex   = nf > 2 ? fields[2] : "";
+        s->syn  = nf > 3 ? fields[3] : "";
+        s->ant  = nf > 4 ? fields[4] : "";
+        s->kind = nf > 5 ? fields[5] : "";
       }
     }
     line = nl ? nl + 1 : NULL;

@@ -283,6 +283,29 @@
         <div class="backup__info" id="backupInfo"></div>
       </section>
 
+      <!-- SD card files (dictionary push) -->
+      <section class="panel panel--sdfiles">
+        <div class="panel__titlerow">
+          <h2 class="panel__title">SD card files</h2>
+          <button class="ghost-btn" id="sdRefresh">Refresh</button>
+        </div>
+        <p class="settingshint">The watch's dictionary lives on its SD card. Upload a
+          regenerated <code>words.idx</code> / <code>defs.dat</code> (from
+          <code>tools/make_dict.py</code>) here, then send — the watch pulls them over
+          WiFi on its next sync and shows "Updating dictionary" for about 3&nbsp;minutes.</p>
+        <div class="sdfile-rows" id="sdFileRows"></div>
+        <div class="reminder-actions">
+          <button type="button" class="ghost-btn" id="sdUploadBtn">Upload files…</button>
+          <input type="file" id="sdUploadInput" multiple accept=".idx,.dat" style="display:none">
+          <button type="button" id="sdPublishBtn">Send to device</button>
+          <span class="savedFlag" id="sdFlag">Sent</span>
+        </div>
+        <div class="deviceinfo">
+          <div class="deviceinfo__row"><span>Published version</span><span id="sdToken">—</span></div>
+          <div class="deviceinfo__row"><span>Published</span><span id="sdPublishedAt">—</span></div>
+        </div>
+      </section>
+
       <!-- Danger zone -->
       <section class="panel panel--danger">
         <h2 class="panel__title">Danger zone</h2>

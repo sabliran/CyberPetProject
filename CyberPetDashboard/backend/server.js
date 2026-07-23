@@ -641,6 +641,9 @@ app.post('/api/sync', (req, res) => {
     // FIX 1: device uses these to delta-apply dashboard XP and stay in config sync
     dashXpTotal:   data.dashXpTotal   || 0,
     petResetToken: data.petResetToken || 0,
+    // Bumped by POST /api/dict/publish; the device downloads the dictionary
+    // files over WiFi when this advances past its NVS-stored last-applied.
+    dictPushToken: data.dictPushToken || 0,
     configVersion: data.configVersion || 1,
     // Daily speech-bubble reminders (dashboard-owned; device caches in NVS).
     reminders:     data.reminders || DEFAULT_REMINDERS,
@@ -860,6 +863,84 @@ app.get('/api/motionlog/file/:name', (req, res) => {
   const p = path.join(MOTION_DIR, name);
   if (!name.endsWith('.json') || !fs.existsSync(p)) return res.status(404).json({ error: 'not found' });
   res.type('json').send(fs.readFileSync(p));
+});
+
+// ---------- Dictionary files (device SD card, pulled over WiFi) ------------
+// tools/make_dict.py output pushed here by tools/push_dict.py, then pulled
+// by the firmware (dict_update.cpp) when the sync response's dictPushToken
+// advances. Same deliberately-outside-store.js idiom as motionlogs: big
+// binary blobs, not app state — only the token lives in the store.
+const crypto = require('crypto');
+const DICT_DIR = path.join(__dirname, 'data', 'dict');
+const DICT_FILES = ['words.idx', 'defs.dat'];
+
+app.post('/api/dict/files/:name', express.raw({ type: 'application/octet-stream', limit: '64mb' }), (req, res) => {
+  const name = String(req.params.name);
+  if (!DICT_FILES.includes(name)) return res.status(400).json({ error: 'unknown dict file' });
+  if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'empty body' });
+  fs.mkdirSync(DICT_DIR, { recursive: true });
+  fs.writeFileSync(path.join(DICT_DIR, name), req.body);
+  console.log(`dict: received ${name} (${req.body.length} bytes)`);
+  res.json({ ok: true, bytes: req.body.length });
+});
+
+// Stamp the manifest (sizes + md5s the firmware verifies against) and bump
+// the token. Called once by push_dict.py after both uploads; the config bump
+// makes a live device sync within seconds instead of the 60 s cadence.
+app.post('/api/dict/publish', (req, res) => {
+  const files = [];
+  for (const name of DICT_FILES) {
+    const p = path.join(DICT_DIR, name);
+    if (!fs.existsSync(p)) return res.status(400).json({ error: `${name} not uploaded yet` });
+    const buf = fs.readFileSync(p);
+    files.push({ name, size: buf.length, md5: crypto.createHash('md5').update(buf).digest('hex') });
+  }
+  const data = store.update(d => {
+    d.dictPushToken = (d.dictPushToken || 0) + 1;
+    bumpConfig(d);
+  });
+  fs.writeFileSync(path.join(DICT_DIR, 'manifest.json'),
+    JSON.stringify({ token: data.dictPushToken, publishedAt: new Date().toISOString(), files }));
+  broadcastConfigChange(data.configVersion, data.configUpdatedAt);
+  console.log(`dict: published token ${data.dictPushToken} (${files.map(f => `${f.name} ${f.size}B`).join(', ')})`);
+  res.json({ ok: true, token: data.dictPushToken, files });
+});
+
+// File-manager listing for the Options tab's "SD card files" panel: what's
+// uploaded, whether each file made it into the last publish, current token.
+app.get('/api/dict/files', (req, res) => {
+  let manifest = null;
+  try { manifest = JSON.parse(fs.readFileSync(path.join(DICT_DIR, 'manifest.json'))); } catch (_) {}
+  const publishedMs = manifest && manifest.publishedAt ? new Date(manifest.publishedAt).getTime() : 0;
+  const files = DICT_FILES.map(name => {
+    const p = path.join(DICT_DIR, name);
+    if (!fs.existsSync(p)) return { name, missing: true };
+    const st = fs.statSync(p);
+    return {
+      name, size: st.size, mtime: st.mtime.toISOString(),
+      // +1s slack: publish stamps the manifest moments after reading the files
+      published: publishedMs > 0 && st.mtimeMs <= publishedMs + 1000,
+    };
+  });
+  res.json({
+    files,
+    token:       manifest ? manifest.token : 0,
+    publishedAt: manifest ? manifest.publishedAt || null : null,
+  });
+});
+
+app.get('/api/dict/manifest', (req, res) => {
+  const p = path.join(DICT_DIR, 'manifest.json');
+  if (!fs.existsSync(p)) return res.status(404).json({ error: 'nothing published' });
+  res.type('json').send(fs.readFileSync(p));
+});
+
+app.get('/api/dict/files/:name', (req, res) => {
+  const name = String(req.params.name);
+  const p = path.join(DICT_DIR, name);
+  if (!DICT_FILES.includes(name) || !fs.existsSync(p)) return res.status(404).json({ error: 'not found' });
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.sendFile(p);
 });
 
 // Focus-block history for the dashboard panel.

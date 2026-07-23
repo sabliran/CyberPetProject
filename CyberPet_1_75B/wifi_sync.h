@@ -90,6 +90,16 @@ public:
   // and calls pet->resetProgress() exactly once.
   int getPetResetToken() const { return petResetToken; }
 
+  // Dictionary push (tools/push_dict.py -> dashboard -> device): the server
+  // bumps dictPushToken on publish; the sketch compares against its NVS
+  // last-applied token and runs dict_update's WiFi download exactly once.
+  int getDictPushToken() const { return dictPushToken; }
+
+  // Resolved dashboard base URL ("http://192.168.x.y:8090") for direct HTTP
+  // fetches outside sync() (dict_update). Non-const: kicks the rate-limited
+  // mDNS resolve if the URL still holds *.local; empty when unresolved.
+  String getServerUrl() { return serverUrlUsable() ? serverUrl : String(); }
+
   // Walk app: today's step count + the device-local calendar date it belongs
   // to (year 0 = clock not valid yet). Included in every sync request so the
   // dashboard can accumulate per-day walking history. Call whenever the
@@ -161,6 +171,7 @@ private:
   TrophyInfo trophies[MAX_TROPHIES];
   int       trophyCount = 0;
   int       petResetToken = 0;
+  int       dictPushToken = 0;
 
   // Shared sync plumbing: the request body and response handling are
   // transport-agnostic; sync() picks USB or HTTP to move the bytes.

@@ -266,6 +266,22 @@ button is the only exit (sketch checks `dictScreenActive()` before its
 apps-menu fallback; sim 'a' mirrors it), internal back buttons only walk
 its own screens. Settings keeps its pet-screen swipe (up).
 
+Dictionary data updates ship over WiFi — never pull the TF card. After
+`tools/make_dict.py` regenerates `tools/dict_out/`, either use the
+dashboard's Options → "SD card files" panel (upload both files, then "Send
+to device" — GET `/api/dict/files` drives its listing/status chips) or run
+`python3 tools/push_dict.py`: both upload the files to the dashboard
+(`/api/dict/files/*`, stored in the container's data volume outside
+store.js like motionlogs) and `POST /api/dict/publish` stamps a size+MD5
+manifest and bumps the store's `dictPushToken`. The device applies it via
+the petResetToken pattern: token rides every sync response, the sketch
+compares against NVS (`Storage::loadDictToken`) and calls
+`dictUpdateRun()` (dict_update.cpp, firmware-only) — blocking ~3 min
+"Updating dictionary" screen while it streams to `/dict/*.new`, verifies
+size+MD5, then swaps. Failures leave the live files untouched (token only
+persists on success, 3 attempts per boot cap). If dict_format.h constants
+changed, flash the firmware BEFORE pushing (the record layout must match).
+
 The sleep app asks "how did you sleep?" once per day (good/medium/bad →
 `Pet::logSleep`: good +12 mood +8 hunger, medium +5/+3, bad −15 xp −10 mood
 −8 hunger). The UI applies pet effects and fires `SleepLogCB`; the sketch

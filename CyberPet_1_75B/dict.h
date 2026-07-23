@@ -15,9 +15,16 @@
 #define DICT_DISPLAY_LEN 96
 #define DICT_MAX_SENSES  16
 
+// All const char* fields point into dict.cpp's internal text buffer and are
+// "" (never NULL) when the record has no such field — old-format cards
+// ("pos|definition" only) parse with every extra empty.
 typedef struct {
   char        pos[4];  // "n" / "v" / "adj" / "adv"
-  const char* def;     // points into dict.cpp's internal text buffer
+  const char* def;
+  const char* ex;      // usage examples, " / "-joined
+  const char* syn;     // synonyms, ", "-joined
+  const char* ant;     // antonyms, ", "-joined
+  const char* kind;    // "type of" parent headword (first hypernym)
 } DictSense;
 
 typedef struct {
@@ -38,6 +45,11 @@ void dictClose();
 // shape, ordering, defs.dat readability). Idempotent; false = no dictionary
 // (missing/bad files) and every call below then fails cleanly.
 bool dictInit();
+
+// Close the files and forget init: the next dictInit() (e.g. on dictionary
+// open) starts from scratch. Called by dict_update before it overwrites the
+// SD files so no stale handle survives the swap.
+void dictReset();
 
 // Exact lookup of a normalized key. Returns the record index, or -1.
 int dictExact(const char* key);

@@ -101,6 +101,11 @@ public:
   void saveXpResetToken(int token);
   int  loadXpResetToken();
 
+  // Last-applied dictionary push token (monotonic; see WifiSync
+  // getDictPushToken / the sketch's dict-update trigger).
+  void saveDictToken(int token);
+  int  loadDictToken();
+
   // Walk app daily steps (change-guarded like quests/goals; the sketch polls
   // the pedometer every couple of seconds but only persists on change).
   void saveStepState(const StepState& s);
