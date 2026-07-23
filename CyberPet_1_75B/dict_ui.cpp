@@ -26,7 +26,8 @@ static lv_obj_t* prevScreen = NULL;  // where back/hide returns to
 static lv_obj_t* wordLabel  = NULL;
 static lv_obj_t* matchLabel = NULL;
 static lv_obj_t* searchBtn  = NULL;
-static lv_obj_t* roller     = NULL;
+static lv_obj_t* rollerL    = NULL;  // twin A-Z rollers: park each in a
+static lv_obj_t* rollerR    = NULL;  // different alphabet region, tap appends
 
 static char     word[DICT_KEY_LEN + 1];
 static int      wordLen  = 0;
@@ -85,16 +86,16 @@ static void updateWheel() {
     uint32_t first = 0, count = 0;
     dictPrefixRange(word, &first, &count);
     if (wordLen < MIN_LETTERS) {
-      snprintf(line, sizeof(line), "%u matches · add 1 more letter",
+      snprintf(line, sizeof(line), "%u matches - add 1 more letter",
                (unsigned)count);
     } else {
       int exact = dictExact(word);
       enable = (count <= (uint32_t)SEARCH_CAP) || exact >= 0;
       if (count > (uint32_t)SEARCH_CAP && exact >= 0)
-        snprintf(line, sizeof(line), "%u matches · '%s' is a word",
+        snprintf(line, sizeof(line), "%u matches - '%s' is a word",
                  (unsigned)count, word);
       else if (count > (uint32_t)SEARCH_CAP)
-        snprintf(line, sizeof(line), "%u matches · keep spelling",
+        snprintf(line, sizeof(line), "%u matches - keep spelling",
                  (unsigned)count);
       else
         snprintf(line, sizeof(line), "%u matches", (unsigned)count);
@@ -106,17 +107,20 @@ static void updateWheel() {
   else        lv_obj_add_state(searchBtn, LV_STATE_DISABLED);
 }
 
+// Shared by both rollers; a single pressSel is safe because press/click
+// always arrive as a pair from the same (single-touch) interaction.
 static void rollerEventCB(lv_event_t* e) {
+  lv_obj_t* r = lv_event_get_target(e);
   lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_PRESSED) {
-    pressSel = lv_roller_get_selected(roller);
+    pressSel = lv_roller_get_selected(r);
   } else if (code == LV_EVENT_CLICKED) {
-    // The mockup's "moved" guard: a click that changed the roller value
-    // (tapping a neighboring letter scrolls to it) only selects — a second
-    // click on the now-centered letter appends it.
-    if (lv_roller_get_selected(roller) != pressSel) return;
+    // The "moved" guard: a click that changed the roller value (tapping a
+    // neighboring letter scrolls to it) only selects — a second click on
+    // the now-centered letter appends it.
+    if (lv_roller_get_selected(r) != pressSel) return;
     if (wordLen >= DICT_KEY_LEN) return;
-    word[wordLen++] = 'a' + (char)lv_roller_get_selected(roller);
+    word[wordLen++] = 'a' + (char)lv_roller_get_selected(r);
     word[wordLen]   = '\0';
     updateWheel();
   }
@@ -161,59 +165,73 @@ static void buildWheelScreen() {
   lv_obj_set_style_text_font(exitHint, &lv_font_montserrat_14, 0);
 
   wordLabel = lv_label_create(wheelScr);
-  lv_obj_set_style_text_font(wordLabel, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_font(wordLabel, &lv_font_montserrat_32, 0);
   lv_obj_set_style_text_color(wordLabel, lv_color_hex(0xFFFFFF), 0);
   lv_obj_set_style_text_letter_space(wordLabel, 6, 0);
-  lv_obj_set_width(wordLabel, 360);
+  lv_obj_set_width(wordLabel, 380);
   lv_label_set_long_mode(wordLabel, LV_LABEL_LONG_DOT);  // very long words
   lv_obj_set_style_text_align(wordLabel, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(wordLabel, LV_ALIGN_TOP_MID, 0, 64);
+  lv_obj_align(wordLabel, LV_ALIGN_TOP_MID, 0, 50);
 
   matchLabel = lv_label_create(wheelScr);
   lv_obj_set_style_text_font(matchLabel, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(matchLabel, lv_color_hex(COL_TEXT), 0);
-  lv_obj_align(matchLabel, LV_ALIGN_TOP_MID, 0, 98);
+  lv_obj_align(matchLabel, LV_ALIGN_TOP_MID, 0, 96);
 
-  roller = lv_roller_create(wheelScr);
+  // Twin rollers, montserrat_32 letters (user request: bigger + a second
+  // wheel). Park each in a different alphabet region to halve scroll
+  // travel; a tap on either appends its centered letter. 110 px wide each
+  // at center ±63: outer edges ±118 from center, well inside the glass.
   static char opts[26 * 2];  // "A\nB\n...\nZ"
   char* p = opts;
   for (char c = 'A'; c <= 'Z'; c++) {
     *p++ = c;
     *p++ = (c == 'Z') ? '\0' : '\n';
   }
-  lv_roller_set_options(roller, opts, LV_ROLLER_MODE_NORMAL);
-  lv_roller_set_visible_row_count(roller, 3);
-  lv_obj_set_width(roller, 130);
-  lv_obj_align(roller, LV_ALIGN_CENTER, 0, 8);
-  lv_obj_set_style_text_font(roller, &lv_font_montserrat_20, 0);
-  lv_obj_set_style_bg_color(roller, lv_color_hex(COL_PANEL), 0);
-  lv_obj_set_style_border_color(roller, lv_color_hex(COL_BORDER2), 0);
-  lv_obj_set_style_border_width(roller, 2, 0);
-  lv_obj_set_style_text_color(roller, lv_color_hex(COL_DIM), 0);
-  lv_obj_set_style_bg_color(roller, lv_color_hex(COL_BORDER2), LV_PART_SELECTED);
-  lv_obj_set_style_text_color(roller, lv_color_hex(COL_ACCENT), LV_PART_SELECTED);
-  lv_obj_add_event_cb(roller, rollerEventCB, LV_EVENT_ALL, NULL);
+  // Fill the whole band between the match line (~y 118) and the buttons
+  // (~y 360): 5 visible rows of montserrat_32 with extra line space ≈ 230
+  // px tall. INFINITE mode wraps Z->A so no scroll-back across the
+  // alphabet, and the taller rows are easier to land on.
+  lv_obj_t** rollers[2] = { &rollerL, &rollerR };
+  for (int i = 0; i < 2; i++) {
+    lv_obj_t* r = lv_roller_create(wheelScr);
+    *rollers[i] = r;
+    lv_roller_set_options(r, opts, LV_ROLLER_MODE_INFINITE);
+    lv_roller_set_visible_row_count(r, 5);
+    lv_obj_set_width(r, 150);
+    lv_obj_align(r, LV_ALIGN_CENTER, i == 0 ? -78 : 78, 6);
+    lv_obj_set_style_text_font(r, &lv_font_montserrat_32, 0);
+    lv_obj_set_style_text_line_space(r, 8, 0);
+    lv_obj_set_style_bg_color(r, lv_color_hex(COL_PANEL), 0);
+    lv_obj_set_style_border_color(r, lv_color_hex(COL_BORDER2), 0);
+    lv_obj_set_style_border_width(r, 2, 0);
+    lv_obj_set_style_text_color(r, lv_color_hex(COL_DIM), 0);
+    lv_obj_set_style_bg_color(r, lv_color_hex(COL_BORDER2), LV_PART_SELECTED);
+    lv_obj_set_style_text_color(r, lv_color_hex(COL_ACCENT), LV_PART_SELECTED);
+    lv_obj_add_event_cb(r, rollerEventCB, LV_EVENT_ALL, NULL);
+  }
+  lv_roller_set_selected(rollerR, 13, LV_ANIM_OFF);  // start right wheel at N
 
   // Bottom row, round-bezel safe: [backspace] [SEARCH] [clear]. Row center
   // sits 153 px below screen center; outer button corners stay inside the
   // 233 px glass radius.
   lv_obj_t* del = makeBtn(wheelScr, LV_SYMBOL_BACKSPACE, COL_BORDER2, deleteBtnCB);
-  lv_obj_set_size(del, 64, 48);
-  lv_obj_align(del, LV_ALIGN_BOTTOM_MID, -110, -56);
+  lv_obj_set_size(del, 72, 54);
+  lv_obj_align(del, LV_ALIGN_BOTTOM_MID, -118, -52);
   lv_obj_t* dlbl = lv_obj_get_child(del, 0);
   lv_obj_set_style_text_color(dlbl, lv_color_hex(COL_TEXT), 0);
 
   searchBtn = makeBtn(wheelScr, "SEARCH", COL_ACCENT, searchBtnCB);
-  lv_obj_set_size(searchBtn, 140, 48);
-  lv_obj_align(searchBtn, LV_ALIGN_BOTTOM_MID, 0, -56);
+  lv_obj_set_size(searchBtn, 150, 54);
+  lv_obj_align(searchBtn, LV_ALIGN_BOTTOM_MID, 0, -52);
   lv_obj_set_style_border_color(searchBtn, lv_color_hex(COL_BORDER),
                                 LV_STATE_DISABLED);
   lv_obj_set_style_text_color(lv_obj_get_child(searchBtn, 0),
                               lv_color_hex(COL_DIM), LV_STATE_DISABLED);
 
   lv_obj_t* clr = makeBtn(wheelScr, LV_SYMBOL_CLOSE, COL_BORDER2, clearBtnCB);
-  lv_obj_set_size(clr, 64, 48);
-  lv_obj_align(clr, LV_ALIGN_BOTTOM_MID, 110, -56);
+  lv_obj_set_size(clr, 72, 54);
+  lv_obj_align(clr, LV_ALIGN_BOTTOM_MID, 118, -52);
   lv_obj_t* clbl = lv_obj_get_child(clr, 0);
   lv_obj_set_style_text_color(clbl, lv_color_hex(COL_TEXT), 0);
 }
@@ -255,7 +273,7 @@ static void addListRow(lv_obj_t* list, uint32_t index, bool exact) {
 
   lv_obj_t* name = lv_label_create(btn);
   char buf[DICT_DISPLAY_LEN + 32];
-  snprintf(buf, sizeof(buf), "%s%s  ·  %d sense%s",
+  snprintf(buf, sizeof(buf), "%s%s  -  %d sense%s",
            exact ? LV_SYMBOL_OK " " : "", entry.display,
            entry.senseCount, entry.senseCount == 1 ? "" : "s");
   lv_label_set_text(name, buf);
@@ -287,7 +305,7 @@ static void buildListScreen() {
 
   lv_obj_t* title = lv_label_create(listScr);
   char buf[DICT_KEY_LEN + 8];
-  snprintf(buf, sizeof(buf), "%s…", word);
+  snprintf(buf, sizeof(buf), "%s...", word);
   lv_label_set_text(title, buf);
   lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
   lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
@@ -333,7 +351,7 @@ static void buildListScreen() {
   uint32_t total = count;  // exact is inside the prefix range when present
   if (total > (uint32_t)shown) {
     lv_obj_t* foot = lv_label_create(list);
-    lv_label_set_text_fmt(foot, "+%u more — keep spelling to narrow",
+    lv_label_set_text_fmt(foot, "+%u more - keep spelling to narrow",
                           (unsigned)(total - (uint32_t)shown));
     lv_obj_set_width(foot, LV_PCT(100));
     lv_obj_set_style_text_font(foot, &lv_font_montserrat_14, 0);
@@ -395,9 +413,9 @@ static void buildDefScreen(uint32_t index) {
 
   for (int i = 0; i < entry.senseCount; i++) {
     lv_obj_t* sense = lv_label_create(body);
-    // "i·pos definition" — accent-recolored number/pos prefix.
+    // "i.pos definition" — accent-recolored number/pos prefix.
     char buf[320];
-    snprintf(buf, sizeof(buf), "#3EE8A0 %d·%s#  %s", i + 1,
+    snprintf(buf, sizeof(buf), "#3EE8A0 %d.%s#  %s", i + 1,
              entry.senses[i].pos, entry.senses[i].def);
     lv_label_set_recolor(sense, true);
     lv_label_set_text(sense, buf);
@@ -439,7 +457,11 @@ void showDictScreen() {
     return;
   }
   if (!wheelScr) buildWheelScreen();
-  updateWheel();  // word survives close/reopen; back-chain preserves it too
+  // Fresh entry: rollers back to their home letters (left A, right N —
+  // user request); the word itself still survives close/reopen.
+  lv_roller_set_selected(rollerL, 0, LV_ANIM_OFF);
+  lv_roller_set_selected(rollerR, 13, LV_ANIM_OFF);
+  updateWheel();
   lv_scr_load_anim(wheelScr, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 200, 0, false);
 }
 
