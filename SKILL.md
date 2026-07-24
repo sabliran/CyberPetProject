@@ -33,9 +33,11 @@ Sync reconciles the two.
 
 Logic files are **hardware-agnostic** and contain zero pin references:
 `pet.h/.cpp`, `habits.h/.cpp`, `storage.h/.cpp`, `ui.h/.cpp`,
-`wifi_sync.h/.cpp`. Keep them that way — it's what makes board swaps
-(e.g. back to the 1.43C — see the firmware README's porting notes) a
-drop-in.
+`wifi_sync.h/.cpp`. Keep them that way — it's what makes board swaps a
+drop-in. (The old 1.43C board left this project in July 2026: it's now the
+separate standalone "amma" device at `~/Downloads/amma`, stripped of all
+pet/sync code, and the dashboard's `/api/sync` is pinned to Koko's
+deviceId so a stray old-firmware sync can't touch Koko's state.)
 
 All board-specific code lives at exactly **two integration points** in
 `CyberPet.ino`, both marked with `// TODO`:
@@ -304,10 +306,8 @@ Deltas accumulate into a `StepState` persisted via `Storage::saveStepState`). Da
 date stamped into StepState; reaching `WALK_DAILY_GOAL` awards
 `WALK_GOAL_XP` once per day (the `rewarded` flag survives reboots). It toggles: the
 same call closes the menu if it's already showing, and any swipe dismisses
-back to the pet. Board wiring: short press (50 ms–2 s) of BOOT/GPIO0 on both
-boards — on the 1.75B a 2 s+ hold still powers off via the PMU, and on the
-1.43C the `ui.showAppsMenu()` call must stay inside
-`bsp_display_lock`/`unlock`.
+back to the pet. Board wiring: short press (50 ms–2 s) of BOOT/GPIO0; a
+2 s+ hold still powers off via the PMU.
 
 ## Device lv_conf.h (outside the repo!)
 

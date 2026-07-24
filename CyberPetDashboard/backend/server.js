@@ -488,6 +488,16 @@ const STEP_HISTORY_DAYS = 90;
 
 app.post('/api/sync', (req, res) => {
   const { deviceId, petState, completedHabits, steps, sleep, backSessions, pushSessions, pullupSessions, focusSessions, plank, storage: devStorage } = req.body;
+  // Single-device dashboard: this store IS Koko (the 1.75B). The old 1.43C
+  // board ("amma", retired from CyberPet July 2026) may still carry pet
+  // firmware in flash that dials this URL — accepting its sync would
+  // overwrite Koko's pet state with years-stale data. deviceId is the WiFi
+  // MAC, so pin to the first-seen device and reject everyone else.
+  const knownDevice = store.get().settings.deviceId;
+  if (deviceId && knownDevice && deviceId !== knownDevice) {
+    console.log(`sync: REJECTED unknown device ${deviceId} (dashboard is bound to ${knownDevice})`);
+    return res.status(403).json({ error: 'unknown device - this dashboard is bound to another CyberPet' });
+  }
   // Use the server's local date as the canonical completion date.
   // Device and server clocks may disagree slightly around midnight — the server
   // date is always preferred so history records are consistent.
